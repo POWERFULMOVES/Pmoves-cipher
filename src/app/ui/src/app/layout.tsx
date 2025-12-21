@@ -23,6 +23,8 @@ export default function RootLayout({
 			<body className="antialiased bg-background text-foreground">
         <QueryProvider>
           <ChatProvider>
+            {/* Cosmic Background Layer */}
+            <div className="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/20 via-background to-background pointer-events-none" />
             <div className="flex h-screen w-screen flex-col">{children}</div>
           </ChatProvider>
         </QueryProvider>

@@ -46,7 +46,8 @@
 		"test": "vitest run",
 		"test:unit": "vitest run --exclude '**/integration/**' --exclude '**/*integration*.test.ts'",
 		"test:integration": "SKIP_INTEGRATION_TESTS=false INTEGRATION_TESTS_ONLY=true vitest run",
-		"test:ci": "pnpm run test:unit",
+		"test:ci": "pnpm run test:unit && pnpm run test:jest",
+		"test:jest": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand",
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
 		"format": "prettier --write \"src/**/*.ts\" \"*.{js,json,md,yml,yaml}\"",
@@ -81,8 +82,10 @@
 		"@vitest/coverage-v8": "^3.2.4",
 		"@web-std/file": "^3.0.3",
 		"cross-env": "^10.0.0",
+		"@types/jest": "^29.5.14",
 		"eslint": "^9.29.0",
 		"eslint-config-prettier": "^10.1.5",
+		"jest": "^29.7.0",
 		"pg": "^8.16.3",
 		"prettier": "^3.5.3",
 		"recheck": "^4.5.0",
@@ -92,6 +95,7 @@
 		"tsx": "^4.19.2",
 		"typescript": "^5.8.3",
 		"vitest": "^3.2.4",
+		"ts-jest": "^29.2.5",
 		"zod": "^3.25.76"
 	},
 	"dependencies": {
