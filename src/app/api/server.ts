@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import http from 'http';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { MemAgent } from '@core/brain/memAgent/index.js';
 import { logger } from '@core/logger/index.js';
@@ -136,6 +137,116 @@ export class ApiServer {
 		});
 
 		return fullPath;
+	}
+
+	private decodeBase64Url(input: string): Buffer {
+		let normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+		const remainder = normalized.length % 4;
+		if (remainder) {
+			normalized += '='.repeat(4 - remainder);
+		}
+		return Buffer.from(normalized, 'base64');
+	}
+
+	private verifySupabaseJwt(token: string, secret: string): Record<string, unknown> | null {
+		const parts = token.split('.');
+		if (parts.length !== 3) {
+			return null;
+		}
+
+		const [encodedHeader, encodedPayload, encodedSignature] = parts;
+		if (!encodedHeader || !encodedPayload || !encodedSignature) {
+			return null;
+		}
+
+		try {
+			const headerRaw = this.decodeBase64Url(encodedHeader).toString('utf8');
+			const header = JSON.parse(headerRaw) as { alg?: string };
+			if (header.alg !== 'HS256') {
+				return null;
+			}
+
+			const signingInput = `${encodedHeader}.${encodedPayload}`;
+			const expectedSignature = createHmac('sha256', secret).update(signingInput).digest();
+			const providedSignature = this.decodeBase64Url(encodedSignature);
+			if (
+				providedSignature.length !== expectedSignature.length ||
+				!timingSafeEqual(providedSignature, expectedSignature)
+			) {
+				return null;
+			}
+
+			const payloadRaw = this.decodeBase64Url(encodedPayload).toString('utf8');
+			const payload = JSON.parse(payloadRaw) as Record<string, unknown>;
+			const exp = payload.exp;
+			if (typeof exp === 'number' && Date.now() >= exp * 1000) {
+				return null;
+			}
+			return payload;
+		} catch {
+			return null;
+		}
+	}
+
+	private requireA2ADiscoveryAuth(req: Request, res: Response): boolean {
+		if (String(process.env.A2A_DISCOVERY_PUBLIC || '').toLowerCase() === 'true') {
+			return true;
+		}
+
+		const jwtSecret = process.env.SUPABASE_JWT_SECRET;
+		if (!jwtSecret) {
+			errorResponse(
+				res,
+				ERROR_CODES.INTERNAL_ERROR,
+				'A2A discovery auth misconfigured: SUPABASE_JWT_SECRET is required',
+				500,
+				undefined,
+				req.requestId
+			);
+			return false;
+		}
+
+		const authHeader = req.get('authorization') || '';
+		const match = authHeader.match(/^Bearer\s+(.+)$/i);
+		const token = match?.[1];
+		if (!token) {
+			errorResponse(
+				res,
+				ERROR_CODES.UNAUTHORIZED,
+				'Authorization header missing or invalid',
+				401,
+				undefined,
+				req.requestId
+			);
+			return false;
+		}
+
+		const payload = this.verifySupabaseJwt(token, jwtSecret);
+		if (!payload) {
+			errorResponse(
+				res,
+				ERROR_CODES.UNAUTHORIZED,
+				'Invalid or expired bearer token',
+				401,
+				undefined,
+				req.requestId
+			);
+			return false;
+		}
+
+		if (payload.role === 'anon') {
+			errorResponse(
+				res,
+				ERROR_CODES.UNAUTHORIZED,
+				'Forbidden: anonymous role cannot access discovery endpoint',
+				403,
+				undefined,
+				req.requestId
+			);
+			return false;
+		}
+
+		return true;
 	}
 
 	private async setupMcpServer(
@@ -709,6 +820,10 @@ export class ApiServer {
 
 		// A2A (Agent-to-Agent) discovery endpoint
 		this.app.get('/.well-known/agent.json', (req: Request, res: Response) => {
+			if (!this.requireA2ADiscoveryAuth(req, res)) {
+				return;
+			}
+
 			try {
 				const agentCard = {
 					name: 'Cipher Agent',
