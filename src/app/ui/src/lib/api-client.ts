@@ -196,7 +196,7 @@ export class ApiClient {
 
 	// A2A Discovery
 	async getAgentCard(): Promise<ApiResponse<any>> {
-		return this.request<any>('/.well-known/agent.json');
+		return this.request<any>('/.well-known/agent-card.json');
 	}
 
 	// LLM Provider information
