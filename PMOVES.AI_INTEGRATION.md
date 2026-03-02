@@ -1,39 +1,101 @@
-# PMOVES.AI Integration Dossier
+# PMOVES.AI Integration Guide for Cipher Memory
 
-_Last updated: 
+## Integration Overview
 
-## Module
-- Name: $t
-- Path: $t
+Cipher Memory is a dual-layer memory system (System 1: concepts/business logic, System 2: reasoning traces) with MCP integration. It provides persistent knowledge-graph memory for Claude Code, Agent Zero, and all PMOVES.AI agents via a Neo4j backend.
 
-## Purpose in PMOVES.AI
-- Describe the role of this submodule in the PMOVES stack (runtime, agent, UI, data, or tooling).
+## Service Details
 
-## PMOVES Overlay Surface
-- pmoves-integrations/ overlay path (if used): _TBD_
-- Compose/profile wiring: _TBD_
-- Env/secret inputs: _TBD_
-- Auth/JWT requirements: _TBD_
+- **Name:** Cipher Memory
+- **Slug:** cipher-api
+- **Tier:** agent
+- **Port:** 8096 (API, remapped from internal 3000)
+- **Health Check:** http://localhost:8096/health
+- **NATS Enabled:** True
+- **GPU Enabled:** False
 
-## Contracts and Topics
-- NATS subjects (if any): _TBD_
-- Supabase schema/tables touched (if any): _TBD_
-- MCP endpoints/skills (if any): _TBD_
+## Integration Points
 
-## Boot Order and Health
-- Bring-up dependency order: _TBD_
-- Health endpoints: _TBD_
-- Smoke targets: _TBD_
+### MCP Bridge
+- MCP server at `pmoves-cipher-mcp/` (stdio transport)
+- Tools: `pmoves_cipher_store`, `pmoves_cipher_search`, `pmoves_cipher_store_reasoning`, `pmoves_cipher_reasoning_patterns`
 
-## Hardening Notes
-- Image pinning / provenance: _TBD_
-- Secrets source (*_FILE / vault / GH env): _TBD_
-- Network/security policy constraints: _TBD_
+### Agent Memory Pipeline
+```
+Claude Code / Agent Zero → Cipher MCP → Neo4j Knowledge Graph
+                         → Reasoning Traces → Pattern Storage
+                         → Agent Checkpoints (plan, checkpoint, completion)
+```
 
-## Source Documentation
-- Upstream docs entrypoint: README.md
-- PMOVES docs index reference: pmoves/docs/SUBMODULE_DOCS_DOSSIER.md
+### NATS Subjects
+- `botz.cipher.memory.stored.v1` - Memory stored event
+- `botz.cipher.memory.recalled.v1` - Memory recalled event
 
-## Owner / Audit
-- Owning lane: _TBD_
-- Last integration audit run: _TBD_
+### API Endpoints
+- `POST http://localhost:8096/api/memory` - Store memory
+- `GET http://localhost:8096/api/memory/search?q=...` - Search memory
+- `GET http://localhost:8096/health` - Health check
+
+## Next Steps
+
+### 1. Customize Environment Variables
+
+Edit the following files with your service-specific values:
+
+- `env.shared` - Base environment configuration
+- `env.tier-agent` - AGENT tier specific configuration
+- `chit/secrets_manifest_v2.yaml` - Add your service's required secrets
+
+### 2. Update Docker Compose
+
+Add the PMOVES.AI environment anchor to your `docker-compose.yml`:
+
+```yaml
+services:
+  cipher-api:
+    <<: [*env-tier-agent, *pmoves-healthcheck]
+    ports:
+      - "8096:3000"
+```
+
+### 3. Add Service Announcement
+
+```python
+from pmoves_announcer import announce_service
+
+@app.on_event("startup")
+async def startup():
+    await announce_service(
+        slug="cipher-api",
+        name="Cipher Memory",
+        url="http://cipher-api:3000",
+        port=8096,
+        tier="agent"
+    )
+```
+
+### 4. Test Integration
+
+```bash
+# Test health check
+curl http://localhost:8096/health
+
+# Test memory store
+curl -X POST http://localhost:8096/api/memory \
+  -H "Content-Type: application/json" \
+  -d '{"key": "test", "content": "integration test"}'
+
+# Search memory
+curl "http://localhost:8096/api/memory/search?q=test"
+
+# Verify NATS announcement
+nats sub "services.announce.v1"
+```
+
+## Files Created
+
+- `PMOVES.AI_INTEGRATION.md` - This integration guide
+
+## Support
+
+For questions or issues, see the PMOVES.AI documentation.
