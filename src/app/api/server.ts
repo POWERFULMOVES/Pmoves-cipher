@@ -32,6 +32,9 @@ import { createLlmRoutes } from './routes/llm.js';
 import { createSearchRoutes } from './routes/search.js';
 import { createWebhookRoutes } from './routes/webhook.js';
 
+const WELL_KNOWN_AGENT_CARD_PATH = '/.well-known/agent-card.json';
+const LEGACY_AGENT_CARD_PATH = '/.well-known/agent.json';
+
 export interface ApiServerConfig {
 	port: number;
 	host?: string;
@@ -188,8 +191,13 @@ export class ApiServer {
 		}
 	}
 
+	private isEnvEnabled(name: string, fallback: string = 'false'): boolean {
+		const value = String(process.env[name] ?? fallback).toLowerCase();
+		return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+	}
+
 	private requireA2ADiscoveryAuth(req: Request, res: Response): boolean {
-		if (String(process.env.A2A_DISCOVERY_PUBLIC || '').toLowerCase() === 'true') {
+		if (this.isEnvEnabled('A2A_DISCOVERY_PUBLIC')) {
 			return true;
 		}
 
@@ -210,6 +218,7 @@ export class ApiServer {
 		const match = authHeader.match(/^Bearer\s+(.+)$/i);
 		const token = match?.[1];
 		if (!token) {
+			res.set('WWW-Authenticate', 'Bearer');
 			errorResponse(
 				res,
 				ERROR_CODES.UNAUTHORIZED,
@@ -223,6 +232,7 @@ export class ApiServer {
 
 		const payload = this.verifySupabaseJwt(token, jwtSecret);
 		if (!payload) {
+			res.set('WWW-Authenticate', 'Bearer');
 			errorResponse(
 				res,
 				ERROR_CODES.UNAUTHORIZED,
@@ -818,8 +828,10 @@ export class ApiServer {
 			}
 		);
 
-		// A2A (Agent-to-Agent) discovery endpoint
-		this.app.get('/.well-known/agent.json', (req: Request, res: Response) => {
+		// A2A (Agent-to-Agent) discovery endpoints.
+		// Canonical: /.well-known/agent-card.json
+		// Legacy alias: /.well-known/agent.json
+		const agentCardHandler = (req: Request, res: Response) => {
 			if (!this.requireA2ADiscoveryAuth(req, res)) {
 				return;
 			}
@@ -859,7 +871,9 @@ export class ApiServer {
 					req.requestId
 				);
 			}
-		});
+		};
+		this.app.get(WELL_KNOWN_AGENT_CARD_PATH, agentCardHandler);
+		this.app.get(LEGACY_AGENT_CARD_PATH, agentCardHandler);
 
 		// Global reset endpoint
 		this.app.post(this.buildApiRoute('/reset'), async (req: Request, res: Response) => {
