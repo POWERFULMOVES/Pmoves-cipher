@@ -8,7 +8,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { bashTool, BashSessionManager } from '../bash.js';
 import type { InternalToolContext } from '../../../types.js';
 
-describe('Bash Tool', () => {
+const describeBash = process.platform === 'win32' ? describe.skip : describe;
+
+describeBash('Bash Tool', () => {
 	let sessionManager: BashSessionManager;
 
 	beforeEach(() => {

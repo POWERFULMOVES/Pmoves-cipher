@@ -135,6 +135,7 @@ describe('Loader', () => {
 		it('should handle environment variables in nested objects', async () => {
 			process.env.DB_HOST = 'localhost';
 			process.env.DB_PORT = '5432';
+			delete process.env.MISSING_USERNAME_CIPHER_TEST;
 
 			const mockConfig = {
 				systemPrompt: 'test prompt',
@@ -150,7 +151,7 @@ describe('Loader', () => {
 						env: {
 							HOST: '$DB_HOST',
 							PORT: '$DB_PORT',
-							USERNAME: '${USERNAME}',
+							USERNAME: '${MISSING_USERNAME_CIPHER_TEST}',
 						},
 					},
 				},
@@ -272,9 +273,14 @@ describe('Loader', () => {
 			mockParseYaml.mockReturnValue(mockConfig);
 
 			const result = (await loadAgentConfig('/path/to/config.yml')) as any;
-			console.log(result);
-			expect(result.systemPrompt).toBe('lowercase');
-			expect(result.llm.apiKey).toBe('uppercase');
+			if (process.platform === 'win32') {
+				// Windows environment variables are case-insensitive.
+				expect(result.systemPrompt).toBe('uppercase');
+				expect(result.llm.apiKey).toBe('uppercase');
+			} else {
+				expect(result.systemPrompt).toBe('lowercase');
+				expect(result.llm.apiKey).toBe('uppercase');
+			}
 		});
 	});
 
