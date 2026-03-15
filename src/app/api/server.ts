@@ -13,6 +13,7 @@ import {
 	requestLoggingMiddleware,
 	errorLoggingMiddleware,
 } from './middleware/logging.js';
+import { bearerTokenAuth } from './middleware/auth.js';
 import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { initializeMcpServer, initializeAgentCardResource } from '@app/mcp/mcp_handler.js';
@@ -747,6 +748,9 @@ export class ApiServer {
 		// Custom middleware
 		this.app.use(requestIdMiddleware);
 		this.app.use(requestLoggingMiddleware);
+
+		// Bearer token authentication (skips /health, /healthz, /.well-known/)
+		this.app.use(bearerTokenAuth);
 	}
 
 	private setupRoutes(): void {
