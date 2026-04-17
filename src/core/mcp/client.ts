@@ -123,9 +123,8 @@ export class MCPClient implements IMCPClient {
 				},
 				{
 					capabilities: {
-						tools: {},
-						prompts: {},
-						resources: {},
+						sampling: {},
+						roots: { listChanged: true },
 					},
 				}
 			);

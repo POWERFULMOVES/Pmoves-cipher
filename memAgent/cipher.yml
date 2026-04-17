@@ -13,10 +13,10 @@ mcpServers: {}
 
 # Choose ONLY ONE of the following LLM providers
 llm:
-  provider: openai
-  model: gpt-4.1-mini
-  apiKey: $OPENAI_API_KEY
+  provider: ollama
+  model: qwen3.5:9b
   maxIterations: 50
+  baseURL: $OLLAMA_BASE_URL
 
   # provider: gemini
   # model: gemini-2.5-flash
@@ -81,9 +81,10 @@ llm:
 # Embedding configuration: ONLY ONE of the following
 
 embedding:
-  type: openai
-  model: text-embedding-3-small
-  apiKey: $OPENAI_API_KEY
+  type: ollama
+  model: qwen3-embedding:4b
+  baseUrl: $OLLAMA_BASE_URL
+  dimensions: 2560
 
   # type: ollama
   # model: mxbai-embed-large
