@@ -31,6 +31,7 @@ import { createConfigRoutes } from './routes/config.js';
 import { createLlmRoutes } from './routes/llm.js';
 import { createSearchRoutes } from './routes/search.js';
 import { createWebhookRoutes } from './routes/webhook.js';
+import { createMemoryRoutes } from './routes/memory.js';
 
 const WELL_KNOWN_AGENT_CARD_PATH = '/.well-known/agent-card.json';
 const LEGACY_AGENT_CARD_PATH = '/.well-known/agent.json';
@@ -812,6 +813,7 @@ export class ApiServer {
 		this.app.use(this.buildApiRoute('/config'), createConfigRoutes(this.agent));
 		this.app.use(this.buildApiRoute('/search'), createSearchRoutes(this.agent));
 		this.app.use(this.buildApiRoute('/webhooks'), createWebhookRoutes(this.agent));
+		this.app.use(this.buildApiRoute('/memory'), createMemoryRoutes(this.agent));
 
 		// Legacy endpoint for MCP server connection
 		this.app.post(this.buildApiRoute('/connect-server'), (req: Request, res: Response) => {
