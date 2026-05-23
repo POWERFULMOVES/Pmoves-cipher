@@ -132,6 +132,7 @@ export const MAIN_SKILL_FILE_NAME = 'SKILL.md'
  */
 export const SKILL_FILE_NAMES = [
   MAIN_SKILL_FILE_NAME,
+  'onboarding.md',
   'query.md',
   'curate.md',
   'review.md',
