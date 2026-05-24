@@ -89,7 +89,7 @@ describe('createTopicViewerNavigation', () => {
     it('navigates to entry.path when it exists', () => {
       const {nav, navigate, onStalePath} = makeNav({existing: new Set(['domains/auth/login.html'])})
 
-      nav.onEntryClick({format: 'html', path: 'domains/auth/login.html', title: 'Login'})
+      nav.onEntryClick({path: 'domains/auth/login.html'})
 
       expect(navigate.calledOnceWithExactly('domains/auth/login.html')).to.equal(true)
       expect(onStalePath.called).to.equal(false)

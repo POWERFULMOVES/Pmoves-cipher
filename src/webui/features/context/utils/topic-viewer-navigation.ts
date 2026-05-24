@@ -18,7 +18,7 @@ export function createTopicViewerNavigation({navigate, onStalePath, pathExists}:
       if (segments.length === 0) return
       safeNavigate(segments.join('/'))
     },
-    onEntryClick(entry: {format?: string; path: string; title?: string}) {
+    onEntryClick(entry: {path: string}) {
       safeNavigate(entry.path)
     },
     onRelatedClick(path: string) {

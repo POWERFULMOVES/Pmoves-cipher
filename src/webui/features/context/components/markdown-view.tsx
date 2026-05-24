@@ -7,7 +7,7 @@ import remarkGfm from 'remark-gfm'
 
 import {hasConflictMarkers} from '../../../../shared/utils/conflict-markers'
 import {oneDark, SyntaxHighlighter} from '../../../lib/syntax-highlighter'
-import {ConflictContentView} from './conflict-content-view'
+import {ConflictContentView, DEFAULT_WRAPPER_CLASS} from './conflict-content-view'
 
 // ── CodeBlock ──────────────────────────────────────────────────────────────
 
@@ -182,7 +182,7 @@ export function MarkdownView({className, content}: MarkdownViewProps) {
     return <ConflictContentView className={className} content={content} />
   }
 
-  const wrapperClass = className ?? 'bg-card text-secondary-foreground mx-auto min-h-0 w-full flex-1 space-y-2 overflow-y-auto break-words text-sm leading-7'
+  const wrapperClass = className ?? DEFAULT_WRAPPER_CLASS
 
   return (
     <div className={wrapperClass}>
