@@ -1,6 +1,6 @@
 ---
 name: byterover
-description: "You MUST use this skill for gathering contexts before any work and saving knowledge after any change. ByteRover stores and retrieves project patterns, decisions, and architectural rules in `.brv/context-tree`. Iron Law: query before thinking, curate after implementing."
+description: "You MUST use this skill for: (1) 'Show me how ByteRover works', 'walk me through ByteRover', tour, intro, walkthrough, or onboarding requests — runs a guided 90-second introduction; (2) gathering contexts before any work; (3) saving knowledge after any change. ByteRover stores and retrieves project patterns, decisions, and architectural rules in `.brv/context-tree`. Iron Law: query before thinking, curate after implementing."
 ---
 
 # ByteRover Knowledge Management
@@ -8,6 +8,22 @@ description: "You MUST use this skill for gathering contexts before any work and
 Use the `brv` CLI to manage your project's long-term memory. Knowledge is stored in `.brv/context-tree/` as human-readable Markdown.
 
 Install: `npm install -g byterover-cli`. **No authentication needed. No LLM provider needed.** `brv query`, `brv search`, `brv read`, `brv curate`, and `brv vc` (local version control) all run locally. Your own LLM drives any synthesis or HTML authoring step. Login is only required for remote sync (`brv vc push` / `brv vc pull`).
+
+## First-Turn Routing
+
+**Check this before anything else on every user turn.**
+
+If the user message reads as a request for an introduction, tour, or overview of ByteRover — for example:
+
+- "Show me how ByteRover works" (canonical phrase from the install docs)
+- "Walk me through ByteRover" / "Give me a ByteRover tour"
+- "How does ByteRover work?"
+- "Intro me to ByteRover" / "Show me ByteRover"
+- Any semantic equivalent ("can you walk me through this", "explain ByteRover to me", etc.)
+
+→ **Stop reading this file. Open `onboarding.md` and follow it.** Do NOT run `brv query`, `brv search`, or `brv curate` before the tour — the tour itself runs those commands as part of the demonstration.
+
+For every other request, continue below to the Iron Law.
 
 ## The Iron Law
 
@@ -80,6 +96,7 @@ digraph brv_flow {
 
 ## Detailed Guides
 
+- `onboarding.md` - 90-second introduction tour; follow when the user asks for an overview, intro, or tour of ByteRover (canonical phrase: "Show me how ByteRover works")
 - `query.md` - retrieval protocol for `brv query`, `brv swarm query`, `brv search`, and `brv read`
 - `curate.md` - saving durable project knowledge, including the HTML `<bv-topic>` contract
 - `review.md` - handling pending human review after curate
