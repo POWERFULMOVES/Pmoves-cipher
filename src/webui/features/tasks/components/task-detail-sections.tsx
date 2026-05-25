@@ -70,7 +70,7 @@ export function LiveStreamSection({task}: {task: StoredTask}) {
         className={cn('pl-3 text-foreground/90 text-sm border-l-2', isLive ? 'border-blue-500/30' : 'border-border')}
       >
         {isBvTopicHtml(content) ? (
-          <TopicViewer html={content} />
+          <TopicViewer breadcrumb={{show: false}} html={content} />
         ) : (
           <MarkdownInline className="text-foreground/90 text-sm">{content || ' '}</MarkdownInline>
         )}
@@ -92,7 +92,7 @@ export function ResultSection({content, taskType}: {content: string; taskType?: 
       <SectionLabel>Result</SectionLabel>
       <Card className="ring-border bg-card p-5" size="sm">
         {isBvTopicHtml(content) ? (
-          <TopicViewer html={content} />
+          <TopicViewer breadcrumb={{show: false}} html={content} />
         ) : (
           <MarkdownInline className="text-foreground/90 text-sm">{content}</MarkdownInline>
         )}
