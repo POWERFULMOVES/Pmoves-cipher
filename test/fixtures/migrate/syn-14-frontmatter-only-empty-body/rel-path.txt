@@ -1,0 +1,1 @@
+syn/empty.md

@@ -1,0 +1,7 @@
+[
+  "frontmatter-type-mismatch:title expected string, got int",
+  "frontmatter-type-mismatch:summary expected string, got list",
+  "frontmatter-type-mismatch:tags contained 1 non-string element(s) \u2014 dropped",
+  "frontmatter-type-mismatch:related expected string or list, got int",
+  "missing-timestamps: using stat.mtime fallback (2023-11-14T22:13:20.000Z)"
+]
