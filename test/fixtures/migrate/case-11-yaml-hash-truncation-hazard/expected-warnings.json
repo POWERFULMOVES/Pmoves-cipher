@@ -1,5 +1,0 @@
-[
-  "yaml-comment-truncation:title value contains ' #' \u2014 PyYAML treats as inline comment, likely silently truncating",
-  "yaml-comment-truncation:summary value contains ' #' \u2014 PyYAML treats as inline comment, likely silently truncating",
-  "missing-timestamps: using stat.mtime fallback (2023-11-14T22:13:20.000Z)"
-]
