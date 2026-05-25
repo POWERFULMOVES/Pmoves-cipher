@@ -128,8 +128,11 @@ function processFile(input: {
 
   if (markdown.trim().length === 0) {
     // Empty standalone topic — surface as failed so the operator can
-    // decide whether to delete or fill in. (Sidecars without a base
-    // sibling reach this branch via case-12 classification.)
+    // decide whether to delete or fill in. Standalone sidecars (`*.abstract.md`
+    // / `*.overview.md` with no base `<name>.md` in the same directory)
+    // also reach this branch: `classifyEntry` keeps them as `'topic'`
+    // because there's nothing to derive from, and the empty-body check
+    // here flags them so the operator sees them.
     return archiveFailed(sourceAbs, archiveAbs, rel, 'empty-file', dryRun)
   }
 
@@ -153,11 +156,27 @@ function processFile(input: {
     return entry
   }
 
+  let htmlWritten = false
   try {
     writeAtomic(htmlAbs, result.html)
+    htmlWritten = true
     moveFile(sourceAbs, archiveAbs)
   } catch (error: unknown) {
     const err = error instanceof Error ? error.message : String(error)
+    // Best-effort cleanup of the just-written HTML sibling when the
+    // archive move fails (e.g. EXDEV copy/unlink raised partway). Without
+    // this, a re-run sees the orphaned `<name>.html`, classifies the
+    // `.md` as `html-sibling-exists`, and silently archives it without
+    // re-converting — operator loses their recovery path. Ignore unlink
+    // errors; the goal is "consistent with never-migrated", not strict.
+    if (htmlWritten) {
+      try {
+        unlinkSync(htmlAbs)
+      } catch {
+        // intentionally swallowed — best-effort
+      }
+    }
+
     return archiveFailed(sourceAbs, archiveAbs, rel, `write-error: ${err}`, dryRun)
   }
 
@@ -263,6 +282,9 @@ export function rollback(input: RollbackInput): RollbackReport {
     : []
   const archiveRoot = archives.at(-1)
   if (archiveRoot === undefined) {
+    // Sentinel string the CLI matches on to render a clean message
+    // (instead of "Unexpected error: ..." via formatConnectionError).
+    // Keeps Python exit-code parity (oracle raises RuntimeError → exit 1).
     throw new Error(
       'No archive to roll back. Run `brv migrate` first.',
     )

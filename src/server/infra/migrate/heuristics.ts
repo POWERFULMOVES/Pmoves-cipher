@@ -44,6 +44,10 @@ export function extractH1Title(body: string): string | undefined {
   for (const line of body.split('\n')) {
     const m = /^#\s+(.+?)\s*$/.exec(line)
     if (m !== null) return m[1]?.trim()
+    // Bail on ANY heading at H2 or deeper (`##`, `###`, `####`, ...).
+    // Intentional — matches the Python oracle's semantic: "H1 must
+    // precede every other heading or it's not a topic title". A body
+    // that opens with `### Foo` then `# Title` returns undefined here.
     if (line.trimStart().startsWith('##')) return undefined
   }
 

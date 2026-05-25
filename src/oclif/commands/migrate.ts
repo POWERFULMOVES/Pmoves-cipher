@@ -124,6 +124,14 @@ public static flags = {
         input.daemonOptions,
       )
     } catch (error) {
+      // "No archive to roll back" is a benign user state, not a
+      // connection failure — render it cleanly with exit 1 (Python
+      // parity), without the misleading "Unexpected error:" prefix.
+      const msg = error instanceof Error ? error.message : String(error)
+      if (msg.includes('No archive to roll back')) {
+        this.emitError(input.format, msg, 1)
+      }
+
       this.emitError(input.format, formatConnectionError(error))
     }
   }
@@ -184,12 +192,16 @@ public static flags = {
     const {daemonOptions, dryRun, format, yes} = input
 
     // Dry-run preview short-circuit — never destructive, never prompts.
+    // Text preview goes to STDOUT (mirrors the forward `--dry-run` path)
+    // so operators can `brv migrate --rollback --dry-run > preview.txt`.
+    // The interactive "Proceed?" prompt below uses stderr — different code
+    // path, different intent.
     if (dryRun) {
       const preview = await this.rollbackRequest({daemonOptions, dryRun: true, format})
       if (format === 'json') {
         this.log(JSON.stringify(preview, null, 2))
       } else {
-        this.logToStderr(formatRollbackDryRunPreview(preview))
+        this.log(formatRollbackDryRunPreview(preview))
         emitRollbackWarnings(this, preview, format)
       }
 
