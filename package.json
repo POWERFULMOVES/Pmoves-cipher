@@ -12,7 +12,7 @@
     "coding-assistant",
     "knowledge-management"
   ],
-  "version": "3.14.0",
+  "version": "3.16.0",
   "author": "ByteRover",
   "bin": {
     "brv": "./bin/run.js"
@@ -164,6 +164,7 @@
     "commands": "./dist/oclif/commands",
     "hooks": {
       "init": [
+        "./dist/oclif/hooks/init/block-autoupdate-when-off",
         "./dist/oclif/hooks/init/block-command-update-npm",
         "./dist/oclif/hooks/init/welcome",
         "./dist/oclif/hooks/init/update-notifier",
@@ -171,7 +172,7 @@
       ],
       "command_not_found": "./dist/oclif/hooks/command_not_found/handle-invalid-commands",
       "error": "./dist/oclif/hooks/error/clean-errors",
-      "postrun": "./dist/oclif/hooks/postrun/restart-after-update"
+      "postrun": "./dist/oclif/hooks/postrun/after-update"
     },
     "plugins": [
       "@oclif/plugin-help",
