@@ -16,16 +16,24 @@ import {CurateMetaSchema} from '../curate-meta.js'
 
 /**
  * Encode curate-html-direct options as a JSON content payload.
+ *
+ * `userIntent` is the originating prompt that drove the curate (the CLI
+ * passes the user's `brv curate "<text>"` argument). Surfacing it on the
+ * wire lets the WebUI Tasks panel render a meaningful row title instead
+ * of the raw HTML blob. Optional — MCP callers that author HTML without
+ * a tracked intent omit it and the row falls back to the topic path.
  */
 export function encodeCurateHtmlContent(options: {
   confirmOverwrite?: boolean
   html: string
   meta?: CurateMeta
+  userIntent?: string
 }): string {
   return JSON.stringify({
     confirmOverwrite: options.confirmOverwrite,
     html: options.html,
     meta: options.meta,
+    userIntent: options.userIntent,
   })
 }
 
@@ -49,6 +57,7 @@ export function decodeCurateHtmlContent(content: string): {
   confirmOverwrite?: boolean
   html: string
   meta?: CurateMeta
+  userIntent?: string
 } {
   let parsed: unknown
   try {
@@ -63,7 +72,12 @@ export function decodeCurateHtmlContent(content: string): {
     throw new Error('curate-html-direct payload is missing a string `html` field.')
   }
 
-  const {confirmOverwrite, html, meta} = parsed as {confirmOverwrite?: unknown; html: string; meta?: unknown}
+  const {confirmOverwrite, html, meta, userIntent} = parsed as {
+    confirmOverwrite?: unknown
+    html: string
+    meta?: unknown
+    userIntent?: unknown
+  }
 
   const metaResult = meta === undefined ? undefined : CurateMetaSchema.safeParse(meta)
   const validMeta = metaResult?.success ? metaResult.data : undefined
@@ -85,5 +99,6 @@ export function decodeCurateHtmlContent(content: string): {
     confirmOverwrite: typeof confirmOverwrite === 'boolean' ? confirmOverwrite : undefined,
     html,
     meta: validMeta,
+    userIntent: typeof userIntent === 'string' && userIntent.length > 0 ? userIntent : undefined,
   }
 }

@@ -10,6 +10,12 @@
 export interface CurateHtmlDirectInputPayload {
   confirmOverwrite?: boolean
   html: string
+  /**
+   * The user's original `brv curate "<text>"` argument when this task
+   * originated from the CLI session protocol. MCP-dispatched curates
+   * have no tracked intent and omit this field.
+   */
+  userIntent?: string
 }
 
 export type CurateHtmlDirectResultPayload =
@@ -42,7 +48,33 @@ export function parseCurateHtmlDirectInput(content: string): CurateHtmlDirectInp
   return {
     confirmOverwrite: typeof obj.confirmOverwrite === 'boolean' ? obj.confirmOverwrite : undefined,
     html: obj.html,
+    userIntent: typeof obj.userIntent === 'string' && obj.userIntent.length > 0 ? obj.userIntent : undefined,
   }
+}
+
+/**
+ * Derive the row-title string for a curate-html-direct task. Falls back
+ * through three sources, in order of preference:
+ *
+ *   1. `userIntent` — set by the CLI's session protocol (`brv curate "<text>"`).
+ *   2. Topic path attribute pulled from the `<bv-topic>` HTML — set by MCP
+ *      callers and any other dispatcher that omits userIntent.
+ *   3. `undefined` — caller falls back to the raw JSON or the "(empty)" state.
+ *
+ * Kept here so both the list table and the detail header can render the
+ * same string without re-parsing the JSON blob twice.
+ */
+export function curateHtmlDirectRowTitle(content: string): string | undefined {
+  const payload = parseCurateHtmlDirectInput(content)
+  if (!payload) return undefined
+  if (payload.userIntent) return payload.userIntent
+
+  // Lightweight regex grab — pulling in a full HTML parser for a row
+  // title would balloon the WebUI bundle. The `<bv-topic path="…">`
+  // contract is stable (writer rejects malformed roots), so a single-
+  // attribute match is safe.
+  const match = /<bv-topic\b[^>]*\bpath="([^"]+)"/i.exec(payload.html)
+  return match?.[1]
 }
 
 export function parseCurateHtmlDirectResult(content: string): CurateHtmlDirectResultPayload | undefined {
