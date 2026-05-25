@@ -72,7 +72,12 @@ export function TaskDetailView({taskId}: TaskDetailViewProps) {
     <div className="flex h-full min-h-0 flex-col">
       <DetailHeader now={now} task={task} />
       <div className="border-border/50 border-t" />
-      <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 py-5" onScroll={onScroll} ref={scrollRef}>
+      <div
+        className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 py-5"
+        data-stick-to-bottom
+        onScroll={onScroll}
+        ref={scrollRef}
+      >
         <InputSection task={task} />
         <EventLogSection now={now} task={task} />
         {showLive && <LiveStreamSection task={task} />}
