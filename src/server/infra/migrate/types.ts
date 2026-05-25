@@ -42,6 +42,14 @@ export type RollbackReport = {
   preservedHtml: string[]
   projectRoot: string
   restored: number
+  /**
+   * `.html` siblings that would have been deleted but were kept because
+   * the preserve manifest was missing or unreadable — we don't know
+   * which of them genuinely pre-existed the migration, so refusing to
+   * delete is the safe default. Operator can review this list and
+   * remove them manually if no longer needed.
+   */
+  skippedHtml: string[]
   startedAt: string
   /**
    * Operator-visible warnings raised during rollback (e.g. missing or

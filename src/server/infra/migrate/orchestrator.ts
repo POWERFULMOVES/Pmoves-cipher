@@ -221,6 +221,24 @@ export function runMigration(input: RunMigrationInput): MigrationReport {
     MIGRATIONS_DIR,
     `${ARCHIVE_FOLDER_PREFIX}${todayUtc()}`,
   )
+
+  // Refuse to re-enter a day's archive that already exists. A second run
+  // on the same UTC day would overwrite the preserve manifest and mix
+  // archived `.md` files from both runs, silently destroying pre-existing
+  // `.html` siblings on a later rollback. The Python oracle has the same
+  // bug — we diverge here deliberately because the failure is silent and
+  // non-undoable. Sentinel phrase 'Migration already ran today' is matched
+  // by the CLI to render a clean message instead of "Unexpected error:".
+  // Gated on `!dryRun` because dry-run is documented as in-memory only —
+  // an existing archive isn't a hazard when nothing will be written.
+  if (!dryRun && existsSync(archiveRoot)) {
+    throw new Error(
+      `Migration already ran today; archive at ${archiveRoot} already exists. ` +
+        'Run `brv migrate --rollback` to undo the previous run before migrating again, ' +
+        'or move/delete the archive directory manually if you are sure it is safe.',
+    )
+  }
+
   report.archiveRoot = archiveRoot
 
   const treeFilesList = listTreeFiles(treeRoot)
@@ -291,37 +309,56 @@ export function rollback(input: RollbackInput): RollbackReport {
   }
 
 
-  // Load the pre-existing-HTML preserve list. Missing or corrupt
-  // manifest: collect warnings in the report — rollback proceeds without
-  // the protection so the operator knows their pre-existing siblings may
-  // get deleted. The CLI surfaces these on stderr (text mode) or in the
-  // JSON envelope; daemon stderr is invisible to the caller.
+  // Load the pre-existing-HTML preserve list. `manifestMissing` is true
+  // only when the file is genuinely absent or unparseable — a valid but
+  // empty `{"preserve_html_siblings": []}` stays false (common case: no
+  // pre-existing siblings, deletion proceeds normally). When truly
+  // missing, we skip `.html` deletion entirely to avoid destroying
+  // pre-existing content we have no record of.
   const warnings: string[] = []
   let preserveHtmlSiblings = new Set<string>()
+  let manifestMissing = false
   const manifestPath = join(archiveRoot, PRE_EXISTING_HTML_MANIFEST)
   if (existsSync(manifestPath)) {
     try {
       const raw = readFileSync(manifestPath, 'utf8')
       const parsed = JSON.parse(raw) as {preserve_html_siblings?: unknown}
       const list = parsed.preserve_html_siblings
-      if (Array.isArray(list)) {
-        preserveHtmlSiblings = new Set(list.filter((x): x is string => typeof x === 'string'))
+      // Require every element to be a string. Silently filtering
+      // non-strings here would let a malformed manifest like
+      // `{"preserve_html_siblings": [123]}` look valid-but-empty after
+      // the filter, leaving `manifestMissing=false` and proceeding to
+      // delete .html siblings — defeating the whole point of the safety
+      // check. Treat any non-string element as corrupt.
+      if (Array.isArray(list) && list.every((x) => typeof x === 'string')) {
+        preserveHtmlSiblings = new Set(list)
+      } else {
+        manifestMissing = true
+        const reason = Array.isArray(list)
+          ? 'contains non-string entries'
+          : 'has unexpected shape (preserve_html_siblings is not an array)'
+        warnings.push(
+          `preserve-list manifest at ${manifestPath} ${reason}; pre-existing .html siblings will be preserved by skipping deletion`,
+        )
       }
     } catch (error: unknown) {
+      manifestMissing = true
       const err = error instanceof Error ? error.message : String(error)
       warnings.push(
-        `preserve-list manifest at ${manifestPath} is unreadable (${err}); pre-existing .html siblings will NOT be protected during rollback`,
+        `preserve-list manifest at ${manifestPath} is unreadable (${err}); pre-existing .html siblings will be preserved by skipping deletion`,
       )
     }
   } else {
+    manifestMissing = true
     warnings.push(
-      `no preserve-list manifest at ${manifestPath} — either this archive predates the manifest feature or the prior migration was interrupted before it was written. Pre-existing .html siblings will NOT be protected.`,
+      `no preserve-list manifest at ${manifestPath} — either this archive predates the manifest feature or the prior migration was interrupted before it was written. Pre-existing .html siblings will be preserved by skipping deletion`,
     )
   }
 
   const restored: string[] = []
   const deletedHtml: string[] = []
   const preservedHtml: string[] = []
+  const skippedHtml: string[] = []
 
   const archivedFiles = listAllFiles(archiveRoot).sort()
   for (const archivedAbs of archivedFiles) {
@@ -338,6 +375,15 @@ export function rollback(input: RollbackInput): RollbackReport {
         continue
       }
 
+      // When the manifest is missing/corrupt we can't tell pre-existing
+      // from migrator-generated siblings — record what WOULD have been
+      // deleted in `skippedHtml` and leave the file in place for the
+      // operator to inspect.
+      if (manifestMissing) {
+        if (existsSync(htmlSibling)) skippedHtml.push(htmlSibling)
+        continue
+      }
+
       if (existsSync(htmlSibling)) {
         if (!dryRun) unlinkSync(htmlSibling)
         deletedHtml.push(htmlSibling)
@@ -347,6 +393,12 @@ export function rollback(input: RollbackInput): RollbackReport {
 
   if (!dryRun) rmSync(archiveRoot, {force: true, recursive: true})
 
+  if (manifestMissing && skippedHtml.length > 0) {
+    warnings.push(
+      `skipped deletion of ${skippedHtml.length} .html sibling(s) because the preserve manifest was unavailable — remove them manually if no longer needed`,
+    )
+  }
+
   return {
     archiveRoot,
     completedAt: nowIsoUtc(),
@@ -355,6 +407,7 @@ export function rollback(input: RollbackInput): RollbackReport {
     preservedHtml,
     projectRoot,
     restored: restored.length,
+    skippedHtml,
     startedAt,
     warnings,
   }

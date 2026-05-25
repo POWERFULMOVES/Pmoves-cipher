@@ -57,6 +57,13 @@ export interface MigrateRollbackResponse {
   preservedHtml: string[]
   projectRoot: string
   restored: number
+  /**
+   * `.html` siblings that would have been deleted but were kept because
+   * the preserve manifest was missing/unreadable. The CLI surfaces a
+   * summary count on stderr (text mode) or via the full list in the
+   * JSON envelope.
+   */
+  skippedHtml: string[]
   startedAt: string
   /**
    * Operator-visible warnings raised inside the daemon (e.g. missing /

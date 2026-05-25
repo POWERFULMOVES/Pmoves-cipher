@@ -152,6 +152,14 @@ public static flags = {
         daemonOptions,
       )
     } catch (error) {
+      // "Migration already ran today" is a benign user state, not a
+      // connection failure — render cleanly with exit 1 instead of
+      // "Unexpected error: ..." via formatConnectionError.
+      const msg = error instanceof Error ? error.message : String(error)
+      if (msg.includes('Migration already ran today')) {
+        this.emitError(format, msg, 1)
+      }
+
       this.emitError(format, formatConnectionError(error))
     }
 
@@ -259,19 +267,27 @@ function summarizeReportLine(report: MigrateRunReport): string {
 }
 
 function formatRollbackDryRunPreview(preview: MigrateRollbackResponse): string {
+  const skipped =
+    preview.skippedHtml.length > 0
+      ? `; SKIP deletion of ${preview.skippedHtml.length} (preserve manifest missing)`
+      : ''
   return (
     `[dry-run] would restore ${preview.restored} file(s) from ${preview.archiveRoot}\n` +
     `[dry-run] would delete ${preview.deletedHtml.length} .html sibling(s); ` +
-    `preserve ${preview.preservedHtml.length} pre-existing`
+    `preserve ${preview.preservedHtml.length} pre-existing${skipped}`
   )
 }
 
 function formatInteractivePrompt(preview: MigrateRollbackResponse): string {
+  const skippedLine =
+    preview.skippedHtml.length > 0
+      ? `\n  SKIP deletion of ${preview.skippedHtml.length} .html sibling(s) (preserve manifest missing — manual cleanup needed)`
+      : ''
   return (
     `About to roll back migration at ${preview.archiveRoot}:\n` +
     `  restore ${preview.restored} file(s) into the live tree\n` +
     `  delete ${preview.deletedHtml.length} generated .html sibling(s)\n` +
-    `  preserve ${preview.preservedHtml.length} pre-existing .html sibling(s)`
+    `  preserve ${preview.preservedHtml.length} pre-existing .html sibling(s)${skippedLine}`
   )
 }
 
