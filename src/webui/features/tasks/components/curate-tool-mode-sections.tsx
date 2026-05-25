@@ -8,7 +8,7 @@ import type {
   CurateHtmlDirectInputPayload,
   CurateHtmlDirectResultPayload,
   CurateHtmlWriteError,
-} from '../utils/curate-html-direct'
+} from '../utils/curate-tool-mode'
 
 import {SectionLabel, TerminalDot} from './task-detail-shared'
 

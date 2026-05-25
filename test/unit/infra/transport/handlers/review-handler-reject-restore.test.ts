@@ -13,13 +13,13 @@
  * stay green while production silently deletes the user's content. This test
  * is the durable contract guard.
  *
- * Implementation note. CLI curate now dispatches `curate-html-direct` to the
+ * Implementation note. CLI curate now dispatches `curate-tool-mode` to the
  * daemon — there is no in-process write to assert against on the CLI side.
- * The test replicates the daemon's curate-html-direct sequence inline
+ * The test replicates the daemon's curate-tool-mode sequence inline
  * (`backupContextTreeFile` → `writeHtmlTopic` → `buildCurateHtmlLogEntry` →
  * `FileCurateLogStore.save`) using the SAME shared helpers the daemon uses.
  * Anything that drifts between this fixture and `agent-process.ts`'s
- * curate-html-direct case breaks this test — which is the point.
+ * curate-tool-mode case breaks this test — which is the point.
  *
  * Lives in its own file because mocha/max-top-level-suites caps one
  * top-level `describe` per file.
@@ -50,8 +50,8 @@ import {ReviewEvents} from '../../../../../src/shared/transport/events/review-ev
 import {createMockTransportServer, type MockTransportServer} from '../../../../helpers/mock-factories.js'
 
 /**
- * Run the daemon's curate-html-direct write sequence directly in-process,
- * keyed by `taskId`. Mirrors `agent-process.ts > case 'curate-html-direct'`:
+ * Run the daemon's curate-tool-mode write sequence directly in-process,
+ * keyed by `taskId`. Mirrors `agent-process.ts > case 'curate-tool-mode'`:
  *
  *   1. resolve absolute target path
  *   2. seed review-backup BEFORE the destructive write (if a file exists)

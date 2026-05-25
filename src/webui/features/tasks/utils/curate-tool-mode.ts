@@ -1,5 +1,5 @@
 /**
- * Parsers for `curate-html-direct` task payloads.
+ * Parsers for `curate-tool-mode` task payloads.
  *
  * Both the input (`task.content`) and the result (`task.result`) are JSON
  * strings packed by the MCP encoder and the daemon executor respectively.
@@ -37,7 +37,7 @@ export interface CurateHtmlWriteError {
 }
 
 export function isCurateHtmlDirectType(type: string): boolean {
-  return type === 'curate-html-direct'
+  return type === 'curate-tool-mode'
 }
 
 export function parseCurateHtmlDirectInput(content: string): CurateHtmlDirectInputPayload | undefined {
@@ -53,7 +53,7 @@ export function parseCurateHtmlDirectInput(content: string): CurateHtmlDirectInp
 }
 
 /**
- * Derive the row-title string for a curate-html-direct task. Falls back
+ * Derive the row-title string for a curate-tool-mode task. Falls back
  * through three sources, in order of preference:
  *
  *   1. `userIntent` — set by the CLI's session protocol (`brv curate "<text>"`).

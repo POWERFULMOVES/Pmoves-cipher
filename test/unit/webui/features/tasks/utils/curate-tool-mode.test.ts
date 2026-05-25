@@ -4,9 +4,9 @@ import {
   curateHtmlDirectRowTitle,
   parseCurateHtmlDirectInput,
   parseCurateHtmlDirectResult,
-} from '../../../../../../src/webui/features/tasks/utils/curate-html-direct.js'
+} from '../../../../../../src/webui/features/tasks/utils/curate-tool-mode.js'
 
-describe('curate-html-direct payload parsers', () => {
+describe('curate-tool-mode payload parsers', () => {
 describe('parseCurateHtmlDirectInput', () => {
   it('parses a payload with html only', () => {
     const content = JSON.stringify({html: '<bv-topic path="foo">x</bv-topic>'})

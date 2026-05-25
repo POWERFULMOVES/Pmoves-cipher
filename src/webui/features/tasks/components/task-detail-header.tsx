@@ -5,7 +5,7 @@ import {toast} from 'sonner'
 
 import type {StoredTask} from '../types/stored-task'
 
-import {curateHtmlDirectRowTitle, isCurateHtmlDirectType} from '../utils/curate-html-direct'
+import {curateHtmlDirectRowTitle, isCurateHtmlDirectType} from '../utils/curate-tool-mode'
 import {formatDuration, formatRelative} from '../utils/format-time'
 import {displayTaskType, isActiveStatus, isTerminalStatus} from '../utils/task-status'
 import {StatusPill} from './status-pill'
@@ -25,7 +25,7 @@ export function DetailHeader({now, task}: {now: number; task: StoredTask}) {
   const referenceTime = task.startedAt ?? task.createdAt
   const verb = STATUS_VERB[task.status]
   const elapsedLabel = isTerminal ? 'ran' : 'running'
-  // For curate-html-direct the raw `content` is a JSON blob; decode it so the
+  // For curate-tool-mode the raw `content` is a JSON blob; decode it so the
   // header shows the user's intent (CLI) or topic path (MCP) instead.
   const displayTitle = isCurateHtmlDirectType(task.type) ? curateHtmlDirectRowTitle(task.content) : task.content
 

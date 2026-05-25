@@ -196,7 +196,7 @@ Bad examples:
       return
     }
 
-    // Continuation routes the write through the daemon (curate-html-direct
+    // Continuation routes the write through the daemon (curate-tool-mode
     // task) so the curate appears in the WebUI Tasks panel and cancel
     // surfaces. Kickoff stays in-process — no daemon round-trip needed
     // to emit the generate prompt.

@@ -503,7 +503,7 @@ async function executeTask(
   if (
     type !== 'search' &&
     type !== 'query-tool-mode' &&
-    type !== 'curate-html-direct' &&
+    type !== 'curate-tool-mode' &&
     type !== 'dream-scan' &&
     type !== 'dream-finalize'
   ) {
@@ -675,7 +675,7 @@ async function executeTask(
           break
         }
 
-        case 'curate-html-direct': {
+        case 'curate-tool-mode': {
           // Tool-mode curate: no LLM dispatch, no provider gate, no
           // usage aggregator. Calling agent (typically over MCP) has
           // already authored the <bv-topic> HTML; daemon validates +
@@ -777,20 +777,20 @@ async function executeTask(
             // so a transient FS error doesn't fail an otherwise-successful
             // curate.
             agentLog(
-              `curate-html-direct: failed to persist log entry for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+              `curate-tool-mode: failed to persist log entry for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
             )
           }
 
           // Regenerate the context-tree index so the new topic appears in
           // index.html. Deferred to postWorkRegistry (drained below): it
           // runs after task:completed — off the user-facing latency path —
-          // and is per-project serialized, so concurrent curate-html-direct
+          // and is per-project serialized, so concurrent curate-tool-mode
           // tasks cannot race on index.html.
           if (writeResult.ok) {
             postWork = () =>
               regenerateContextTreeIndex({
                 contextTreeRoot,
-                log: (msg) => agentLog(`curate-html-direct ${taskId}: ${msg}`),
+                log: (msg) => agentLog(`curate-tool-mode ${taskId}: ${msg}`),
                 projectName: basename(projectPath),
               })
           }
@@ -889,7 +889,7 @@ async function executeTask(
               // Archiving removed topics — refresh index.html so they
               // drop out of the navigation index. Deferred to
               // postWorkRegistry (per-project serialized, runs after
-              // task:completed) — same rationale as curate-html-direct.
+              // task:completed) — same rationale as curate-tool-mode.
               postWork = () =>
                 regenerateContextTreeIndex({
                   contextTreeRoot,

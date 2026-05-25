@@ -2,13 +2,13 @@
  * curate-session orchestrator tests.
  *
  * The orchestrator owns the multi-step session protocol — kickoff
- * (in-process), continuation (dispatches `curate-html-direct` to the
+ * (in-process), continuation (dispatches `curate-tool-mode` to the
  * daemon and maps the result back to the wire envelope), retry-cap loop
  * on validation failures, and SESSION_ID path-traversal guards.
  *
  * The write itself (HTML validation, file write, log persistence,
  * review backup, sidecar bump, index regen) lives in the daemon's
- * `case 'curate-html-direct'` handler — those behaviors are covered by
+ * `case 'curate-tool-mode'` handler — those behaviors are covered by
  * daemon-side tests + the integration test that exercises a real
  * daemon round-trip. Here we mock the transport client so the unit
  * tests stay fast and focus on orchestrator concerns.
@@ -224,7 +224,7 @@ describe('curate-session', () => {
   // ─── continueSession — dispatch to daemon ────────────────────────────────────
 
   describe('continueSession — daemon dispatch', () => {
-    it('dispatches task:create with type=curate-html-direct and the encoded envelope', async () => {
+    it('dispatches task:create with type=curate-tool-mode and the encoded envelope', async () => {
       const kickoff = await kickoffSession({content: 'remember JWT', projectRoot})
       const {client, getDispatched, simulateEvent} = createMockClient()
       respondWith({client, envelope: okEnvelope(), simulateEvent})
@@ -238,7 +238,7 @@ describe('curate-session', () => {
 
       const dispatch = getDispatched()
       assertDefined(dispatch, 'task:create dispatch')
-      expect(dispatch.type).to.equal('curate-html-direct')
+      expect(dispatch.type).to.equal('curate-tool-mode')
       const decoded = decodeCurateHtmlContent(dispatch.content)
       expect(decoded.html).to.equal(VALID_TOPIC_HTML_RAW)
       // continueSession defaults confirmOverwrite to false when omitted; the

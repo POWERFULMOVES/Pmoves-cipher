@@ -30,7 +30,7 @@ import {waitForTaskCompletion} from './task-client.js'
  * invocations.
  *
  * Dispatch. Continuation routes the validated `<bv-topic>` HTML through
- * the daemon's `curate-html-direct` task type — the same type the MCP
+ * the daemon's `curate-tool-mode` task type — the same type the MCP
  * `brv-curate` tool already uses. This converges CLI and MCP on one
  * write path, so every CLI curate produces a `TaskHistoryEntry` and
  * surfaces in the WebUI Tasks panel, `brv task list`, and cancel
@@ -48,12 +48,12 @@ import {waitForTaskCompletion} from './task-client.js'
  *     → emit needs-llm-step, step = generate-html
  *
  *   continue(response) on pending-generate
- *     → dispatch curate-html-direct (daemon validates + writes)
+ *     → dispatch curate-tool-mode (daemon validates + writes)
  *       on success → emit done, clear session
  *       on failure → state = pending-correct, emit needs-llm-step / correct-html
  *
  *   continue(response) on pending-correct
- *     → dispatch curate-html-direct
+ *     → dispatch curate-tool-mode
  *       on success → emit done, clear session
  *       on failure → attempts++; if attempts >= MAX_ATTEMPTS → emit failed,
  *                    else stay in pending-correct, emit correct-html
@@ -178,7 +178,7 @@ type KickoffOptions = {
 }
 
 type ContinueOptions = {
-  /** Connected daemon transport client — used to dispatch the curate-html-direct task. */
+  /** Connected daemon transport client — used to dispatch the curate-tool-mode task. */
   client: ITransportClient
   /**
    * Opt-in to clobber an existing topic at the resolved path. Default
@@ -289,13 +289,13 @@ export function parseCurateResponse(raw: string): {html: string; meta?: CurateMe
 /**
  * Continue an existing session. Validates the response envelope,
  * dispatches the `<bv-topic>` HTML through the daemon's
- * `curate-html-direct` task type for validation + write, advances the
+ * `curate-tool-mode` task type for validation + write, advances the
  * retry loop on validation failure, terminates with `failed` once the
  * retry cap is exhausted.
  *
  * All write-side concerns (HTML validation, file write, log entry,
  * review backup, sidecar bump, index regeneration) live in the daemon's
- * `curate-html-direct` handler — see `agent-process.ts`. This function
+ * `curate-tool-mode` handler — see `agent-process.ts`. This function
  * is the session-protocol envelope only.
  */
 export async function continueSession(options: ContinueOptions): Promise<CurateSessionEnvelope> {
@@ -411,7 +411,7 @@ export async function continueSession(options: ContinueOptions): Promise<CurateS
 }
 
 /**
- * Dispatch a `curate-html-direct` task to the daemon and await its
+ * Dispatch a `curate-tool-mode` task to the daemon and await its
  * structured result. Same shape MCP's `brv-curate` tool uses — the
  * daemon handler owns HTML validation, write, log persistence, review
  * backup, sidecar bump, and index regeneration. Throws on transport
@@ -440,7 +440,7 @@ async function dispatchCurateHtmlDirect(args: {
     content: encodeCurateHtmlContent({confirmOverwrite, html, meta, userIntent}),
     projectPath,
     taskId,
-    type: 'curate-html-direct' as const,
+    type: 'curate-tool-mode' as const,
   }
 
   let parsed: CurateHtmlDirectResult | undefined
@@ -477,7 +477,7 @@ async function dispatchCurateHtmlDirect(args: {
   await completion
 
   if (errorMessage) throw new Error(errorMessage)
-  if (!parsed) throw new Error('Daemon curate-html-direct returned no payload.')
+  if (!parsed) throw new Error('Daemon curate-tool-mode returned no payload.')
   return parsed
 }
 

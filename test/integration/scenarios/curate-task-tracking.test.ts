@@ -5,16 +5,16 @@
  * file directly in-process and bypassed the daemon's TaskRouter, so no
  * `TaskHistoryEntry` was ever persisted and the curate was invisible to
  * the WebUI Tasks panel. The CLI now routes the write through the
- * daemon's `curate-html-direct` task type (same path MCP already uses)
+ * daemon's `curate-tool-mode` task type (same path MCP already uses)
  * — TaskRouter's lifecycle hooks persist the entry automatically.
  *
  * This integration test exercises the persistence + read-back path
  * directly against a real TaskRouter + FileTaskHistoryStore. It dispatches
- * a `task:create` for a curate-html-direct payload that carries
+ * a `task:create` for a curate-tool-mode payload that carries
  * `userIntent` (as the CLI now does), drives the completion lifecycle,
  * and asserts:
  *
- *   1. A persisted TaskHistoryEntry exists with `type: 'curate-html-direct'`
+ *   1. A persisted TaskHistoryEntry exists with `type: 'curate-tool-mode'`
  *      and `status: 'completed'`.
  *   2. The entry's `content` round-trips through the shared encoder so
  *      `userIntent` survives the wire.
@@ -23,9 +23,9 @@
  *      HTML blob.
  *
  * Note on scope. We stub the agent pool — the daemon's `agent-process.ts`
- * curate-html-direct handler (which calls `writeHtmlTopic`, the log store,
+ * curate-tool-mode handler (which calls `writeHtmlTopic`, the log store,
  * the sidecar, and the index regenerator) is covered by its own
- * unit-level coverage (html-writer, curate-html-log, curate-html-direct
+ * unit-level coverage (html-writer, curate-html-log, curate-tool-mode
  * payload parsers, MCP brv-curate-tool). This test focuses on the gap
  * the ticket targets: lifecycle visibility through TaskRouter.
  */
@@ -52,7 +52,7 @@ import {decodeCurateHtmlContent, encodeCurateHtmlContent} from '../../../src/sha
 import {
   curateHtmlDirectRowTitle,
   parseCurateHtmlDirectInput,
-} from '../../../src/webui/features/tasks/utils/curate-html-direct.js'
+} from '../../../src/webui/features/tasks/utils/curate-tool-mode.js'
 
 const PROJECT_PATH = '/app'
 
@@ -168,7 +168,7 @@ describe('ENG-2925 — CLI curate appears in Task queue', () => {
   })
 
   /**
-   * Drive a curate-html-direct task to terminal `completed` via the
+   * Drive a curate-tool-mode task to terminal `completed` via the
    * TaskRouter's request handlers, then read it back through the
    * `task:list` handler (the same path the WebUI uses). list merges
    * in-memory + on-disk state, so it picks up the entry even before the
@@ -187,7 +187,7 @@ describe('ENG-2925 — CLI curate appears in Task queue', () => {
 
     const createHandler = transportHelper.requestHandlers.get(TransportTaskEventNames.CREATE)
     await createHandler!(
-      {content, projectPath: PROJECT_PATH, taskId, type: 'curate-html-direct'},
+      {content, projectPath: PROJECT_PATH, taskId, type: 'curate-tool-mode'},
       'client-1',
     )
 
@@ -215,9 +215,9 @@ describe('ENG-2925 — CLI curate appears in Task queue', () => {
     return {row, taskId}
   }
 
-  it('surfaces a CLI curate as a curate-html-direct row in task:list (status=completed)', async () => {
+  it('surfaces a CLI curate as a curate-tool-mode row in task:list (status=completed)', async () => {
     const {row} = await dispatchCliCurateAndList({userIntent: USER_INTENT})
-    expect(row.type).to.equal('curate-html-direct')
+    expect(row.type).to.equal('curate-tool-mode')
     expect(row.status).to.equal('completed')
   })
 
