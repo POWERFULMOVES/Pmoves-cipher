@@ -207,6 +207,7 @@ Bad examples:
         const envelope = await continueSession({
           client,
           confirmOverwrite,
+          format,
           projectRoot: resolveProjectRoot(),
           response,
           sessionId,

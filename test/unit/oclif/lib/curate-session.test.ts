@@ -63,7 +63,7 @@ function assertDefined<T>(value: T | undefined, label: string): asserts value is
  */
 function createMockClient(): {
   client: ITransportClient
-  getDispatched: () => undefined | {content: string; taskId: string; type: string}
+  getDispatched: () => undefined | {content: string; projectPath?: string; taskId: string; type: string}
   simulateEvent: <T>(event: string, payload: T) => void
 } {
   const eventHandlers = new Map<string, Set<(data: unknown) => void>>()
@@ -99,7 +99,11 @@ function createMockClient(): {
   return {
     client,
     getDispatched: () =>
-      (client.requestWithAck as unknown as {dispatched?: {content: string; taskId: string; type: string}}).dispatched,
+      (
+        client.requestWithAck as unknown as {
+          dispatched?: {content: string; projectPath?: string; taskId: string; type: string}
+        }
+      ).dispatched,
     simulateEvent<T>(event: string, payload: T) {
       const handlers = eventHandlers.get(event)
       if (handlers) for (const h of handlers) h(payload)
@@ -121,26 +125,29 @@ function respondWith(args: {
 }): void {
   const {client, envelope, simulateEvent} = args
   const requestStub = client.requestWithAck as SinonStub
-  requestStub.callsFake(async (event: string, data: {content: string; taskId: string; type: string}) => {
-    if (event === 'task:create') {
-      // Stash the dispatch payload on the stub so getDispatched() (set up
-      // by createMockClient via a shared closure) can read it.
-      ;(requestStub as unknown as {dispatched?: unknown}).dispatched = {
-        content: data.content,
-        taskId: data.taskId,
-        type: data.type,
+  requestStub.callsFake(
+    async (event: string, data: {content: string; projectPath?: string; taskId: string; type: string}) => {
+      if (event === 'task:create') {
+        // Stash the dispatch payload on the stub so getDispatched() (set up
+        // by createMockClient via a shared closure) can read it.
+        ;(requestStub as unknown as {dispatched?: unknown}).dispatched = {
+          content: data.content,
+          projectPath: data.projectPath,
+          taskId: data.taskId,
+          type: data.type,
+        }
+        // Defer the completion to the next microtask — mirrors the real
+        // daemon path where requestWithAck resolves before task:completed
+        // fires. Without the defer, the simulated event would fire before
+        // waitForTaskCompletion has subscribed.
+        queueMicrotask(() => {
+          simulateEvent('task:completed', {result: JSON.stringify(envelope), taskId: data.taskId})
+        })
       }
-      // Defer the completion to the next microtask — mirrors the real
-      // daemon path where requestWithAck resolves before task:completed
-      // fires. Without the defer, the simulated event would fire before
-      // waitForTaskCompletion has subscribed.
-      queueMicrotask(() => {
-        simulateEvent('task:completed', {result: JSON.stringify(envelope), taskId: data.taskId})
-      })
-    }
 
-    
-  })
+      return {taskId: data.taskId}
+    },
+  )
 }
 
 function okEnvelope(overrides: Partial<Extract<CurateHtmlDirectResult, {status: 'ok'}>> = {}): CurateHtmlDirectResult {
@@ -237,6 +244,18 @@ describe('curate-session', () => {
       // continueSession defaults confirmOverwrite to false when omitted; the
       // payload always carries a boolean so the daemon doesn't have to guess.
       expect(decoded.confirmOverwrite).to.equal(false)
+    })
+
+    it('threads projectPath onto the task:create payload (mirrors MCP, removes ambient-state dependency)', async () => {
+      const kickoff = await kickoffSession({content: 'x', projectRoot})
+      const {client, getDispatched, simulateEvent} = createMockClient()
+      respondWith({client, envelope: okEnvelope(), simulateEvent})
+
+      await continueSession({client, projectRoot, response: VALID_TOPIC_HTML, sessionId: kickoff.sessionId!})
+
+      const dispatch = getDispatched()
+      assertDefined(dispatch, 'task:create dispatch')
+      expect(dispatch.projectPath).to.equal(projectRoot)
     })
 
     it('threads userIntent from the session state into the encoded payload', async () => {

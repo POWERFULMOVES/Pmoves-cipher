@@ -188,6 +188,13 @@ type ContinueOptions = {
    * surfaced via the `--overwrite` flag on `brv curate --session …`).
    */
   confirmOverwrite?: boolean
+  /**
+   * CLI output format. Threaded into the daemon dispatch's
+   * `waitForTaskCompletion` so the stale-check fallback uses the same
+   * channel as the CLI (no JSON envelope leaking onto stdout in text
+   * mode). Defaults to 'json' — matches the agent-facing default.
+   */
+  format?: 'json' | 'text'
   projectRoot: string
   response: string
   sessionId: string
@@ -292,7 +299,7 @@ export function parseCurateResponse(raw: string): {html: string; meta?: CurateMe
  * is the session-protocol envelope only.
  */
 export async function continueSession(options: ContinueOptions): Promise<CurateSessionEnvelope> {
-  const {client, confirmOverwrite = false, projectRoot, response, sessionId} = options
+  const {client, confirmOverwrite = false, format = 'json', projectRoot, response, sessionId} = options
 
   // Reject non-uuid session ids before any path join — see SESSION_ID_RE
   // for the threat model. Same `kind` as "session not found" because
@@ -347,8 +354,10 @@ export async function continueSession(options: ContinueOptions): Promise<CurateS
   const writeResult = await dispatchCurateHtmlDirect({
     client,
     confirmOverwrite,
+    format,
     html,
     meta,
+    projectPath: projectRoot,
     userIntent: state.userIntent,
   })
 
@@ -411,15 +420,25 @@ export async function continueSession(options: ContinueOptions): Promise<CurateS
 async function dispatchCurateHtmlDirect(args: {
   client: ITransportClient
   confirmOverwrite: boolean
+  format: 'json' | 'text'
   html: string
   meta?: CurateMeta
+  /**
+   * Threaded explicitly onto the wire payload so the daemon doesn't have
+   * to fall back to client-association lookup. Mirrors MCP's brv-curate
+   * dispatch and removes the worktree-edge-case ambient dependency where
+   * the CLI's `resolveProjectRoot()` and the daemon's `resolveProject()`
+   * (workspace-link-aware) can disagree.
+   */
+  projectPath: string
   userIntent: string
 }): Promise<CurateHtmlDirectResult> {
-  const {client, confirmOverwrite, html, meta, userIntent} = args
+  const {client, confirmOverwrite, format, html, meta, projectPath, userIntent} = args
   const taskId = randomUUID()
   const taskPayload = {
     clientCwd: process.cwd(),
     content: encodeCurateHtmlContent({confirmOverwrite, html, meta, userIntent}),
+    projectPath,
     taskId,
     type: 'curate-html-direct' as const,
   }
@@ -431,7 +450,7 @@ async function dispatchCurateHtmlDirect(args: {
     {
       client,
       command: 'curate',
-      format: 'json',
+      format,
       onCompleted({result}) {
         if (!result) {
           errorMessage = 'Daemon returned an empty curate result.'

@@ -141,5 +141,12 @@ describe('curateHtmlDirectRowTitle', () => {
   it('returns undefined when neither userIntent nor a path attribute is present', () => {
     expect(curateHtmlDirectRowTitle(JSON.stringify({html: '<bv-topic title="x"></bv-topic>'}))).to.equal(undefined)
   })
+
+  it('HTML-decodes entities in the extracted path so &amp; renders as &', () => {
+    // Forward-compat: today bv-topic paths are lowercase-letters/slashes by writer
+    // contract, but if the charset widens the row title must not show raw entities.
+    const content = JSON.stringify({html: '<bv-topic path="foo/bar&amp;baz" title="t"></bv-topic>'})
+    expect(curateHtmlDirectRowTitle(content)).to.equal('foo/bar&baz')
+  })
 })
 })

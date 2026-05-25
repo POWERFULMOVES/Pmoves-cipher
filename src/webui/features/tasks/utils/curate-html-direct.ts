@@ -74,7 +74,23 @@ export function curateHtmlDirectRowTitle(content: string): string | undefined {
   // contract is stable (writer rejects malformed roots), so a single-
   // attribute match is safe.
   const match = /<bv-topic\b[^>]*\bpath="([^"]+)"/i.exec(payload.html)
-  return match?.[1]
+  return match ? decodeHtmlEntities(match[1]) : undefined
+}
+
+/**
+ * Decode the five HTML entities the writer might emit inside an
+ * attribute value (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`). Path
+ * content is lowercase-letters/slashes today, so this is a forward-
+ * compat normalization — without it a path like `foo&amp;bar` would
+ * render as `foo&amp;bar` instead of `foo&bar`.
+ */
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&amp;', '&')
 }
 
 export function parseCurateHtmlDirectResult(content: string): CurateHtmlDirectResultPayload | undefined {
