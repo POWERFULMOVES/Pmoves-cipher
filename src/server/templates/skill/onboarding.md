@@ -101,6 +101,7 @@ Saved:
 
 Lives at .brv/context-tree/ — local-only.
 See it in your browser: http://localhost:7700
+Also version-controlled, cloud-syncable, and shareable across agents — more at the end.
 ```
 
 **The pain-naming + commitment paragraph** is the wow. It should:
@@ -127,6 +128,7 @@ stop re-explaining. You start where you left off.
 
 Lives at .brv/context-tree/ — local-only.
 See it in your browser: http://localhost:7700
+Also version-controlled, cloud-syncable, and shareable across agents — more at the end.
 ```
 
 **If the user shared no pain** (after the one-nudge attempt), skip the pain-naming paragraph entirely. Don't manufacture one. Show the identity bullets, the location line, the URL, the pause invitation. The tour still works; just without the life-saving moment.
@@ -136,6 +138,8 @@ The browser URL is the **verifiable** trust proof — the user can click it in 2
 Do NOT tell the user to "run `brv webui`" — the daemon auto-starts the web server on the persisted port (default 7700). The URL works as soon as the daemon is alive, which it already is.
 
 Do NOT ask "is this right?" — that turns the artifact into a form. Users who want to correct it will; users who don't, won't be slowed down.
+
+The closing teaser line ("Also version-controlled, cloud-syncable, and shareable across agents — more at the end") plants a seed for Msg 3 Part 1. Keep it to one line. Do NOT explain `brv vc` or connectors here — the point is to signal "you have more controls when you want them" without diluting the local-only trust climax. The frame is *opt-in additions to the local default*, not contradictions to it.
 
 Before the pause invitation, give the user a **2-beat concept map** so they know where they are in the flow and what's coming. Without this, "I'll show you retrieval next" is meaningless — the user has no idea what retrieval is or why it matters.
 
@@ -209,11 +213,20 @@ Msg 3 is **not** a passive close. After Msg 2, the user has saved their persona 
 
 **Two parts:**
 
-### Part 1 — Where memory lives (one sentence)
+### Part 1 — Where memory lives + the three controls
+
+Start with the location line — still command-free, same reason as the trust opener (the user is being told *where* and *who controls it*, not how to run a command):
 
 > "Your memory lives in `.brv/context-tree/` — all local, you control sync."
 
-That's it. One sentence. Avoid command names in this line for the same reason as the trust opener — the user is being told *where* and *who controls it*, not how to run a command.
+Then deliver on Msg 1's "more at the end" promise with **three short bullets**. The trust-opener constraint applies only to the location line above; command names are appropriate here because we're naming capabilities, not establishing trust.
+
+> "Three controls you have when you're ready:
+> • **Version control** — `brv vc status`, `diff`, `commit`, `branch`. Git-style, just for your memory.
+> • **Cloud sync, on your terms** — `brv vc push` / `brv vc pull` when you want it. Never automatic.
+> • **Cross-agent sharing** — connectors let Claude, Codex, Amp, OpenCode, and other agents share the same memory."
+
+Three bullets max. Do NOT walk through sub-commands, flags, or auth setup. If the user asks for details, point them at `brv vc --help` or `brv connectors --help` — those aren't tour material. The job here is to name what's available so the user knows the surface area exists; they can explore on their own time.
 
 ### Part 2 — Activation: seed project context now
 
