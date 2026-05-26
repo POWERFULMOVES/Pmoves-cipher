@@ -60,6 +60,49 @@ public static flags = {
     }),
   }
 
+  // Visibility: `protected` so unit tests can exercise the gate
+  // combinations without spinning up the daemon transport.
+  protected displayForwardResult(report: MigrateRunReport, format: string, dryRun: boolean): void {
+    if (format === 'json') {
+      this.log(JSON.stringify(report, null, 2))
+      return
+    }
+
+    this.log(summarizeReportLine(report))
+    if (report.summary.failed > 0) {
+      this.warn(
+        `${report.summary.failed} file(s) failed — sources moved to the archive at ${report.archiveRoot ?? '(none)'}`,
+      )
+      for (const f of report.files) {
+        if (f.outcome === 'failed') {
+          this.warn(`  - ${f.sourceRelPath}: ${f.reason ?? '(no reason)'}`)
+        }
+      }
+    }
+
+    // VC-sync hint: text mode only (JSON consumers parse the envelope),
+    // skip when nothing actually changed on disk (dry-run, or `migrated=0`
+    // which means no .md topics were eligible). Also skip on partial
+    // failure (`failed > 0`) — the run exits 2 below, so "successfully
+    // migrated" wording would contradict the exit code and might nudge
+    // users to push a tree the command itself reports as failed.
+    if (!dryRun && report.summary.migrated > 0 && report.summary.failed === 0) {
+      this.logVcSyncHint()
+    }
+  }
+
+  // Stderr (not stdout) so the hint stays out of pipes like
+  // `brv migrate | grep migrated`; logToStderr (not `this.warn`)
+  // because it's a tip, not a warning.
+  protected logVcSyncHint(): void {
+    this.logToStderr('')
+    this.logToStderr('Tip: the context tree was successfully migrated. Sync the new HTML topics to ByteRover cloud:')
+    this.logToStderr('  brv vc status')
+    this.logToStderr('  brv vc add . && brv vc commit -m "Migrate context tree to HTML"')
+    this.logToStderr('  brv vc push')
+    this.logToStderr('(Run `brv vc remote add origin <url>` first if no remote is configured.)')
+  }
+
   public async run(): Promise<void> {
     const {flags} = await this.parse(Migrate)
     // Project resolution mirrors `status` / `vc`:
@@ -163,43 +206,14 @@ public static flags = {
       this.emitError(format, formatConnectionError(error))
     }
 
-    const {report} = response
-    if (format === 'json') {
-      this.log(JSON.stringify(report, null, 2))
-    } else {
-      this.log(summarizeReportLine(report))
-      if (report.summary.failed > 0) {
-        this.warn(
-          `${report.summary.failed} file(s) failed — sources moved to the archive at ${report.archiveRoot ?? '(none)'}`,
-        )
-        for (const f of report.files) {
-          if (f.outcome === 'failed') {
-            this.warn(`  - ${f.sourceRelPath}: ${f.reason ?? '(no reason)'}`)
-          }
-        }
-      }
-
-      // VC-sync hint: text mode only (JSON consumers parse the envelope),
-      // skip when nothing actually changed on disk (dry-run, or `migrated=0`
-      // which means no .md topics were eligible). Stderr keeps it out of
-      // stdout pipes; logToStderr (not `this.warn`) because it's a tip,
-      // not a warning. Wording stays accurate under partial failure.
-      if (!dryRun && report.summary.migrated > 0) {
-        this.logToStderr('')
-        this.logToStderr('Tip: the context tree was successfully migrated. Sync the new HTML topics to ByteRover cloud:')
-        this.logToStderr('  brv vc status                                       # review the conversion')
-        this.logToStderr('  brv vc add . && brv vc commit -m "Migrate context tree to HTML"')
-        this.logToStderr('  brv vc push                                         # sync to cloud')
-        this.logToStderr('(Run `brv vc remote add origin <url>` first if no remote is configured.)')
-      }
-    }
+    this.displayForwardResult(response.report, format, dryRun)
 
     // Force termination with exit 2 on failure. The daemon-client tail
     // (Socket.IO reconnect timers) keeps the event loop alive, so
     // letting Node exit naturally with `process.exitCode = 2` doesn't
     // work — the loop never drains. Match the Python oracle's
     // behavior (lines 2021-2031): hard-exit with the failure code.
-    if (report.summary.failed > 0) {
+    if (response.report.summary.failed > 0) {
       // eslint-disable-next-line n/no-process-exit, unicorn/no-process-exit
       process.exit(2)
     }
