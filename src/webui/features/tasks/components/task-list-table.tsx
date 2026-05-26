@@ -10,7 +10,7 @@ import {
 } from '@campfirein/byterover-packages/components/table'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@campfirein/byterover-packages/components/tooltip'
 import {cn} from '@campfirein/byterover-packages/lib/utils'
-import {Trash2} from 'lucide-react'
+import {CircleStop, LoaderCircle, Trash2} from 'lucide-react'
 
 import type {StatusFilter} from '../stores/task-store'
 import type {StoredTask} from '../types/stored-task'
@@ -19,6 +19,7 @@ import {curateHtmlDirectRowTitle, isCurateHtmlDirectType} from '../utils/curate-
 import {getCurrentActivity} from '../utils/current-activity'
 import {formatDuration, formatRelative, formatTimeOfDay, shortTaskId} from '../utils/format-time'
 import {isInterrupted} from '../utils/is-interrupted'
+import {rowActionKind} from '../utils/row-action-kind'
 import {displayTaskType, isTerminalStatus} from '../utils/task-status'
 import {StatusPill} from './status-pill'
 import {NoMatchState} from './task-list-empty'
@@ -45,8 +46,10 @@ function durationOf(task: StoredTask, now: number): string {
 
 interface TaskTableProps {
   allSelected: boolean
+  cancellingIds: Set<string>
   filtered: StoredTask[]
   now: number
+  onCancel: (taskId: string) => void
   onClearSearch: () => void
   onDelete: (taskId: string) => void
   onRowClick: (taskId: string) => void
@@ -59,8 +62,10 @@ interface TaskTableProps {
 
 export function TaskTable({
   allSelected,
+  cancellingIds,
   filtered,
   now,
+  onCancel,
   onClearSearch,
   onDelete,
   onRowClick,
@@ -96,9 +101,11 @@ export function TaskTable({
         ) : (
           filtered.map((task) => (
             <TaskRow
+              cancelling={cancellingIds.has(task.taskId)}
               isSelected={selectedIds.has(task.taskId)}
               key={task.taskId}
               now={now}
+              onCancel={onCancel}
               onDelete={onDelete}
               onRowClick={onRowClick}
               onToggleSelect={onToggleSelect}
@@ -112,15 +119,19 @@ export function TaskTable({
 }
 
 function TaskRow({
+  cancelling,
   isSelected,
   now,
+  onCancel,
   onDelete,
   onRowClick,
   onToggleSelect,
   task,
 }: {
+  cancelling: boolean
   isSelected: boolean
   now: number
+  onCancel: (taskId: string) => void
   onDelete: (taskId: string) => void
   onRowClick: (taskId: string) => void
   onToggleSelect: (taskId: string) => void
@@ -133,6 +144,7 @@ function TaskRow({
   // For curate-tool-mode, task.content is a JSON blob — decode it so the
   // row shows the user's intent (CLI) or topic path (MCP) instead.
   const displayInput = isCurateHtmlDirectType(task.type) ? curateHtmlDirectRowTitle(task.content) : task.content
+  const actionKind = rowActionKind(task.status)
 
   const row = (
     <TableRow
@@ -187,7 +199,11 @@ function TaskRow({
         {durationOf(task, now)}
       </TableCell>
       <TableCell className="text-center" onClick={(event) => event.stopPropagation()}>
-        {terminal && <RowAction onClick={() => onDelete(task.taskId)} />}
+        {actionKind === 'delete' ? (
+          <DeleteRowAction onClick={() => onDelete(task.taskId)} />
+        ) : (
+          <CancelRowAction cancelling={cancelling} onClick={() => onCancel(task.taskId)} />
+        )}
       </TableCell>
     </TableRow>
   )
@@ -210,10 +226,25 @@ function TypeBadge({type}: {type: string}) {
   )
 }
 
-function RowAction({onClick}: {onClick: () => void}) {
+function DeleteRowAction({onClick}: {onClick: () => void}) {
   return (
     <Button aria-label="Delete" onClick={onClick} size="icon-xs" title="Delete" variant="ghost">
       <Trash2 className="size-3.5" />
+    </Button>
+  )
+}
+
+function CancelRowAction({cancelling, onClick}: {cancelling: boolean; onClick: () => void}) {
+  return (
+    <Button
+      aria-label="Cancel task"
+      disabled={cancelling}
+      onClick={onClick}
+      size="icon-xs"
+      title={cancelling ? 'Cancelling…' : 'Cancel task'}
+      variant="ghost"
+    >
+      {cancelling ? <LoaderCircle className="size-3.5 animate-spin" /> : <CircleStop className="size-3.5" />}
     </Button>
   )
 }

@@ -64,9 +64,9 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - `agent/` — LLM agent: `core/` (interfaces/domain), `infra/` (modules including llm, memory, map, swarm, sandbox, session, tools, document-parser), `resources/` (prompts YAML, tool `.txt` descriptions)
 - `server/` — Daemon infrastructure: `config/`, `core/` (domain/interfaces), `infra/` (modules including vc, git, hub, mcp, cogit, connectors, project, provider-oauth, session, space, dream, webui, billing, transport, executor, storage, context-tree), `templates/`, `utils/`
 - `shared/` — Cross-module: constants, types, transport events, utils
-- `tui/` — React/Ink TUI: app (router/pages), components, features (23 modules, including vc, worktree, source, hub, curate), hooks, lib, providers, stores
-- `webui/` — Browser dashboard (React/Vite). Entry `src/webui/index.tsx`; `features/` (15 panels), `pages/` (8 pages: home, changes, configuration, contexts, tasks, analytics, project-selector, not-found), `layouts/`, `stores/`. Connects to the daemon via Socket.IO; no imports from `server/`, `agent/`, or `tui/` (same boundary rule)
-- `oclif/` — Commands grouped by topic (`vc/`, `hub/`, `worktree/`, `source/`, `space/`, `review/`, `connectors/`, `curate/`, `model/`, `providers/`, `swarm/`, `query-log/`) + top-level `.ts` commands (`webui`, `dream`, `review`, `search`, `locations`, `query`, `login`, `logout`, `init`, `mcp`, `pull`, `push`, `restart`, `status`, `debug`) + hidden internals (`main` — default `brv` REPL entry; `hook-prompt-submit` — emits `brv-instructions` template for coding-agent pre-prompt hooks, e.g. Claude Code `UserPromptSubmit`); hooks, lib (daemon-client, task-client, json-response)
+- `tui/` — React/Ink TUI: app (router/pages), components, features (24 modules, including vc, worktree, source, hub, curate, settings), hooks, lib, providers, stores
+- `webui/` — Browser dashboard (React/Vite). Entry `src/webui/index.tsx`; `features/` (16 panels), `pages/` (8 pages: home, changes, configuration, contexts, tasks, analytics, project-selector, not-found — configuration sub-routes live under `pages/configuration/`: layout, general, connectors, version-control), `layouts/`, `stores/`. Connects to the daemon via Socket.IO; no imports from `server/`, `agent/`, or `tui/` (same boundary rule)
+- `oclif/` — Commands grouped by topic (`vc/`, `hub/`, `worktree/`, `source/`, `space/`, `review/`, `connectors/`, `curate/`, `model/`, `providers/`, `swarm/`, `query-log/`, `settings/`) + top-level `.ts` commands (`webui`, `dream`, `review`, `search`, `locations`, `query`, `login`, `logout`, `init`, `mcp`, `pull`, `push`, `restart`, `status`, `debug`) + hidden internals (`main` — default `brv` REPL entry; `hook-prompt-submit` — emits `brv-instructions` template for coding-agent pre-prompt hooks, e.g. Claude Code `UserPromptSubmit`); hooks, lib (daemon-client, task-client, json-response)
 
 **Import boundary** (ESLint-enforced): `tui/` must not import from `server/`, `agent/`, or `oclif/`. Use transport events or `shared/`.
 
@@ -82,6 +82,13 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - Agent pool manages forked child processes per project; task routing in `server/infra/process/`
 - MCP server in `server/infra/mcp/` exposes tools via Model Context Protocol; `tools/` subdir has dedicated implementations (`brv-query-tool`, `brv-curate-tool`)
 - Connector subsystem (`server/infra/connectors/`): `rules/`, `skill/`, `mcp/`, `hook/`, `shared/`. Shared rules files (e.g. `AGENTS.md` shared by Amp/Codex/OpenCode) embed an agent-name footer inside `<!-- BEGIN/END BYTEROVER RULES -->` markers — see `shared/constants.ts` (`BRV_RULE_MARKERS`, `BRV_RULE_TAG`, `extractInstalledAgentFromBrvSection`) — so each agent owns its own segment. Preserve the footer when editing rule-section logic
+
+### Task Cancellation
+
+- `brv curate | query | dream --cancel <taskId>` — emits `TaskEvents.CANCEL`; shared CLI helper `src/oclif/lib/cancel-task.ts` formats text or JSON envelope. SIGINT in the foreground command triggers the same cancel path (`task-client-sigint`)
+- Daemon: `server/infra/daemon/agent-cancel-listener.ts` routes the cancel into the running agent process; `agent-executor-error.ts` distinguishes user-cancel from real failures so cancelled tasks aren't recorded as errors in billing/history
+- TUI: Esc cancels streaming (covered in REPL section); Tasks tab supports cancel keybind via `tui/features/tasks/hooks/use-cancel-running-task-keybind.ts` + `select-cancel-target.ts`, mounted through `cancel-keybind-initializer.tsx` in app providers
+- WebUI: cancel button in `webui/features/tasks/components/task-list-table.tsx` + `task-detail-header.tsx`, wired via `webui/features/tasks/api/cancel-task.ts` and `utils/row-action-kind.ts`
 
 ### Web UI (`src/webui/`, `src/server/infra/webui/`)
 
@@ -108,7 +115,7 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - Oclif: `src/oclif/commands/{vc,worktree,source}/`; TUI: `src/tui/features/{vc,worktree,source}/`; slash commands (`vc-*`, `worktree`, `source`) in `src/tui/features/commands/definitions/`
 - `brv curate` runs Phases 1–3 in the foreground and detaches Phase 4 (post-curate finalization: summary regeneration, manifest rebuild) to the daemon's `PostWorkRegistry`, which serializes per project and coordinates with `dream-lock-service.ts` to prevent concurrent `_index.md` writes. `--detach` makes the entire run background. Overlapping curate runs for the same project are still rejected. Behavioral contract lives in `src/server/templates/sections/` (`brv-instructions.md`, `workflow.md`, `skill/SKILL.md`) — the in-daemon agent reads these at runtime
 - `brv review [--disable | --enable]` — toggle the project-scoped HITL review log; `brv review pending` lists items, `brv review approve <id>` / `brv review reject <id>` resolve them. When disabled, sync curate skips the "X operations require review" prompt, detached curate stops emitting per-operation review markers, and `brv dream` no longer surfaces `needsReview` operations. The flag is snapshotted at task creation and propagated via `AsyncLocalStorage` (`resolveReviewDisabled`) so mid-task toggles do not race
-- HITL WebUI: pending operations render in the Changes tab (`webui/features/vc/`); the on/off toggle lives in `hitl-settings-panel.tsx` on the Configuration page. Reject restores the pre-operation file snapshot from `file-review-backup-store.ts` (`server/infra/storage/`); transport via `review-handler.ts` + `shared/transport/events/review-events.ts`
+- HITL WebUI: pending operations render in the Changes tab (`webui/features/vc/`); the on/off toggle (`hitl-settings-panel.tsx`) is mounted on the Configuration → Version Control sub-page (`webui/pages/configuration/version-control.tsx`). Reject restores the pre-operation file snapshot from `file-review-backup-store.ts` (`server/infra/storage/`); transport via `review-handler.ts` + `shared/transport/events/review-events.ts`
 - `brv login` defaults to OAuth (interactive provider picker); pass `--api-key` only for CI. `brv logout` clears credentials
 
 ### LLM Billing
@@ -119,6 +126,13 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - CLI status line: `brv status` / `brv providers list` render credits via `oclif/lib/billing-line.ts` + `format-billing-line.ts`
 - `brv providers connect` (byterover provider) runs a team-select step that emits `BillingEvents.SET_PINNED_TEAM`
 - WebUI: credits pill (`webui/features/provider/components/credits-pill.tsx`), team-select step in `provider-flow-dialog.tsx`, billing API wrappers in `webui/features/provider/api/` (`list-billing-usage`, `list-teams`, `get-pinned-team`, `set-pinned-team`, `get-free-user-limit`)
+
+### Settings
+
+- `brv settings` (bare = list) / `brv settings get <key>` / `set <key> <value>` / `reset <key>` — user-configurable settings persisted at `<BRV_DATA_DIR>/settings.json`. Most settings need `brv restart` to take effect; boolean settings like `update.checkForUpdates` apply live (`restartRequired: false` on the descriptor)
+- Categories: `concurrency`, `llm`, `task-history`, `updates`. Keys: `agentPool.maxSize`, `agentPool.maxConcurrentTasksPerProject`, `llm.iterationBudgetMs`, `llm.requestTimeoutMs`, `taskHistory.maxEntries`, `update.checkForUpdates`. Descriptors in `server/core/domain/entities/settings.ts` are discriminated on `type: 'integer' | 'boolean'` and reference `src/constants.ts` so a constant change updates the setting's default automatically. `update.checkForUpdates` gates the `update-notifier` init hook and the `block-autoupdate-when-off` init hook (which rejects `brv update` when the user has opted out). Agent process consumes settings via `agent/infra/settings/agent-settings-snapshot.ts` forwarded by `server/infra/daemon/agent-process.ts`
+- Server: `server/infra/storage/file-settings-store.ts` + `settings-validator.ts`; `server/infra/daemon/settings-bootstrap.ts` reads settings at boot and feeds AgentPool (maxSize, maxConcurrentTasks) + task-history cache. Transport: `shared/transport/events/settings-events.ts` + `server/infra/transport/handlers/settings-handler.ts`
+- UI: TUI `tui/features/settings/`, WebUI `webui/features/settings/` (rendered under `pages/configuration/` sub-routes). Task heartbeat (`server/infra/process/task-heartbeat-manager.ts`) and task-history cache (`server/infra/process/task-history-store-cache.ts`) are tuned via these keys; oclif task-client uses heartbeats — explicit task timeouts are deprecated
 
 ### Other oclif topic groups
 
