@@ -15,6 +15,7 @@ import {CircleStop, LoaderCircle, Trash2} from 'lucide-react'
 import type {StatusFilter} from '../stores/task-store'
 import type {StoredTask} from '../types/stored-task'
 
+import {curateHtmlDirectRowTitle, isCurateHtmlDirectType} from '../utils/curate-tool-mode'
 import {getCurrentActivity} from '../utils/current-activity'
 import {formatDuration, formatRelative, formatTimeOfDay, shortTaskId} from '../utils/format-time'
 import {isInterrupted} from '../utils/is-interrupted'
@@ -140,6 +141,9 @@ function TaskRow({
   const isRunning = !terminal
   const interrupted = isInterrupted(task)
   const activity = getCurrentActivity(task)
+  // For curate-tool-mode, task.content is a JSON blob — decode it so the
+  // row shows the user's intent (CLI) or topic path (MCP) instead.
+  const displayInput = isCurateHtmlDirectType(task.type) ? curateHtmlDirectRowTitle(task.content) : task.content
   const actionKind = rowActionKind(task.status)
 
   const row = (
@@ -161,8 +165,8 @@ function TaskRow({
         <TypeBadge type={task.type} />
       </TableCell>
       <TableCell className="text-foreground max-w-0">
-        <div className="truncate" title={task.content || undefined}>
-          {task.content || <span className="text-muted-foreground italic">(empty)</span>}
+        <div className="truncate" title={displayInput || undefined}>
+          {displayInput || <span className="text-muted-foreground italic">(empty)</span>}
         </div>
         {activity && (
           <div className="text-muted-foreground mono mt-1 flex items-center gap-1.5 text-[11px]">
