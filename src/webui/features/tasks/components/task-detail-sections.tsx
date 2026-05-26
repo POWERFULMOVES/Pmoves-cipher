@@ -10,12 +10,12 @@ import {
   isCurateHtmlDirectType,
   parseCurateHtmlDirectInput,
   parseCurateHtmlDirectResult,
-} from '../utils/curate-html-direct'
+} from '../utils/curate-tool-mode'
 import {shortTaskId} from '../utils/format-time'
 import {isBvTopicHtml} from '../utils/is-bv-topic-html'
 import {isActiveStatus} from '../utils/task-status'
 import {AttachmentChip} from './attachment-chip'
-import {CurateHtmlDirectInputView, CurateHtmlDirectResultView} from './curate-html-direct-sections'
+import {CurateHtmlDirectInputView, CurateHtmlDirectResultView} from './curate-tool-mode-sections'
 import {MarkdownInline} from './markdown-inline'
 import {SectionLabel, TerminalDot} from './task-detail-shared'
 
