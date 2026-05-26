@@ -178,6 +178,20 @@ public static flags = {
           }
         }
       }
+
+      // VC-sync hint: text mode only (JSON consumers parse the envelope),
+      // skip when nothing actually changed on disk (dry-run, or `migrated=0`
+      // which means no .md topics were eligible). Stderr keeps it out of
+      // stdout pipes; logToStderr (not `this.warn`) because it's a tip,
+      // not a warning. Wording stays accurate under partial failure.
+      if (!dryRun && report.summary.migrated > 0) {
+        this.logToStderr('')
+        this.logToStderr('Tip: the context tree was successfully migrated. Sync the new HTML topics to ByteRover cloud:')
+        this.logToStderr('  brv vc status                                       # review the conversion')
+        this.logToStderr('  brv vc add . && brv vc commit -m "Migrate context tree to HTML"')
+        this.logToStderr('  brv vc push                                         # sync to cloud')
+        this.logToStderr('(Run `brv vc remote add origin <url>` first if no remote is configured.)')
+      }
     }
 
     // Force termination with exit 2 on failure. The daemon-client tail
