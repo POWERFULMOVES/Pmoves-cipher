@@ -5,7 +5,7 @@ description: "Use when inspecting ByteRover query logs, curate history, or recen
 
 # ByteRover History
 
-Use history commands to audit what ByteRover queried, curated, or queued. History is especially important before trusting detached curate work from a previous step.
+Use history commands to audit what ByteRover queried, curated, or queued. Useful for the user asking "what was decided" or for confirming a recent curate's final shape.
 
 ## When To Inspect History
 

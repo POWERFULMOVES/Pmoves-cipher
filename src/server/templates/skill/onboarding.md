@@ -236,7 +236,7 @@ Before the tour ends, get **at least one piece of real project knowledge** into 
 
 > "One more thing — your persona is saved, but I don't know your codebase yet. I see `CLAUDE.md` in your repo. Want me to curate it as starter project context? Takes about 30 seconds."
 
-If the user says yes, run `brv curate -f <path>` (or whatever the project-file curate flag is) and confirm with one line.
+If the user says yes, read the file yourself and curate its content: `brv curate "<one-line description>: $(cat <path>)"` (or the tool-mode session form). Confirm with one line.
 
 **Path B — No docs file detected.** Prompt for one rule:
 

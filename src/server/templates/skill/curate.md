@@ -30,21 +30,6 @@ brv curate view --detail
 brv review pending --format json
 ```
 
-## Execution Mode
-
-Default behavior is blocking. Run `brv curate "..."` with no flag and wait until it completes before using, querying, or reporting the newly curated data.
-
-Use `--detach` only when both conditions are true:
-
-1. No remaining step in this turn depends on the curated data.
-2. The user explicitly told you not to wait, for example "don't wait", "don't block", "fire and forget", or "move on without waiting".
-
-If a detached curate returns a log id, do not claim it is saved until this verifies completion:
-
-```bash
-brv curate view <logId> --format json
-```
-
 ## Session Protocol
 
 Curate runs as request -> response -> request:
