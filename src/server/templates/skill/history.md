@@ -9,7 +9,7 @@ Use history commands to audit what ByteRover queried, curated, or queued. Useful
 
 ## When To Inspect History
 
-- You need to verify a detached `brv curate` completed.
+- The user asks what was recently queried, curated, or what files a recent curate touched.
 - The user asks what was recently queried or curated.
 - You are debugging whether memory recall happened.
 - You need recall metrics or matched-doc details from prior queries.

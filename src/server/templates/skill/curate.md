@@ -25,7 +25,7 @@ Do not curate transient details, already-stored facts, or general knowledge unre
 
 ```bash
 brv curate "Authentication middleware validates JWTs in src/middleware/auth.ts and rejects expired tokens before route handlers."
-brv curate "Retry helper treats HTTP 429 as retryable with exponential backoff." -f src/retry.ts
+brv curate "Retry helper treats HTTP 429 as retryable with exponential backoff. Implementation: src/retry.ts uses exponential backoff with jitter."
 brv curate view --detail
 brv review pending --format json
 ```
@@ -134,5 +134,5 @@ Then tell the user what needs review.
 |---|---|
 | Sending markdown or JSON as the session response | Send one bare `<bv-topic>...</bv-topic>` HTML document |
 | Omitting `keywords` when retrieval terms are obvious | Add comma-separated `keywords` on `<bv-topic>` |
-| Claiming detached curate work is saved immediately | Verify completion with `brv curate view <logId> --format json` |
+| Reporting completion before a session reaches `data.status: "done"` | Wait for `done` before telling the user the topic is saved |
 | Overwriting an existing path without preserving prior facts | Merge existing content unless the user explicitly wants replacement |
