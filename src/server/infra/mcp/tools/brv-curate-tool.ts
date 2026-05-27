@@ -45,10 +45,13 @@ const TOOL_DESCRIPTION = [
   '- All attribute names lowercase; all attribute values double-quoted.',
   '- Do not invent elements or attributes outside the vocabulary below.',
   '- Do not emit `importance`, `maturity`, `recency`, `createdat`, or `updatedat` on <bv-topic> — those are system-managed.',
+  '- Inside `<li>`, write plain text only — no leading `-`, `*`, `•`, `1.`/`2.` markers; the renderer adds them via CSS.',
+  '- `<bv-diagram>` body: emit directly with HTML entities for `<`, `>`, `&`. Do NOT wrap in `<![CDATA[…]]>` — HTML5 parses CDATA as a bogus comment that the first `-->` closes. Example: `<bv-diagram type="mermaid">graph LR; A --&gt;|x| B</bv-diagram>`.',
   '',
   '# Path format',
   '- The `path` attribute on <bv-topic> is `<domain>/<topic>` or `<domain>/<topic>/<subtopic>`, snake_case segments.',
   '- Pick descriptive domain names (1-3 words). Reuse existing domains where they fit; avoid generic names like `misc`, `general`.',
+  '- `related` distinguishes files from folders by suffix: file targets end in `.html` (e.g. `related="@security/oauth.html"`); folder/domain targets stay bare (e.g. `related="@ops"`). The FE routes by suffix.',
   '',
   '# Authoring patterns (apply when the topic naturally has more than ~5 children)',
   '- **Group related rules under a container** rather than emitting one flat list. Use `<bv-structure>` for static state',
@@ -147,7 +150,7 @@ export const BrvCurateInputSchema = z
 /**
  * Registers the brv-curate tool with the MCP server.
  *
- * Post-M3: routes through the daemon's `curate-html-direct` task type,
+ * Post-M3: routes through the daemon's `curate-tool-mode` task type,
  * which validates the HTML and writes the topic via `writeHtmlTopic` —
  * no LLM dispatch, no provider required.
  *
@@ -223,7 +226,7 @@ export function registerBrvCurateTool(
           content: encodeCurateHtmlContent({confirmOverwrite, html, meta}),
           projectPath: taskContext.projectRoot,
           taskId,
-          type: 'curate-html-direct',
+          type: 'curate-tool-mode',
           worktreeRoot: taskContext.worktreeRoot,
         })
 
@@ -263,7 +266,9 @@ export function registerBrvCurateTool(
  * Render the `CurateHtmlDirectResult` envelope as a text block for the
  * calling agent.
  *
- * - `status: 'ok'`: a single confirmation line (`✓ Wrote` / `✓ Replaced`).
+ * - `status: 'ok'`: a confirmation line (`✓ Wrote` / `✓ Replaced`),
+ *   followed by one `  ⚠ <text>` line per advisory warning the writer
+ *   surfaced (today: broken `related` refs). Clean writes are head-only.
  * - `status: 'validation-failed'`: one `✗ <kind>: <message>` line per
  *   error. `path-exists` inlines the existing content as a fenced ```html
  *   block. The vocabulary slice is appended at the bottom so the agent
@@ -272,7 +277,10 @@ export function registerBrvCurateTool(
 function renderEnvelope(envelope: CurateHtmlDirectResult): string {
   if (envelope.status === 'ok') {
     const action = envelope.overwrote ? 'Replaced' : 'Wrote'
-    return `✓ ${action} topic to ${envelope.filePath}`
+    const head = `✓ ${action} topic to ${envelope.filePath}`
+    const warnings = envelope.warnings ?? []
+    if (warnings.length === 0) return head
+    return [head, ...warnings.map((w) => `  ⚠ ${w}`)].join('\n')
   }
 
   const lines = envelope.errors.map((err) => renderError(err))

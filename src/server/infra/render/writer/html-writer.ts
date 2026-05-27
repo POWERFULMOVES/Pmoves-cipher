@@ -7,6 +7,7 @@ import {DirectoryManager} from '../../../core/domain/knowledge/directory-manager
 import {ELEMENT_NAMES} from '../../../core/domain/render/element-types.js'
 import {ELEMENT_REGISTRY} from '../elements/registry.js'
 import {parseHtml, stripCodeFenceWrapper, walkElements} from '../reader/html-parser.js'
+import {computeRelatedWarnings} from './related-ref-warner.js'
 
 /**
  * HTML writer for the curate context-tree.
@@ -36,6 +37,14 @@ export type HtmlWriteSuccess = {
   /** Absolute path of the file that was written. */
   filePath: string
   ok: true
+  /**
+   * Advisory warnings raised AFTER the write succeeded. Today these
+   * come from the `related` ref resolver (broken refs); the channel is
+   * open to future read-only post-write checks. Always an array —
+   * empty means a clean write. Wire formats may omit the field when
+   * empty (see `agent-process.ts` curate-tool-mode case).
+   */
+  warnings: readonly string[]
   /** The cleaned HTML actually persisted (after fence-stripping). */
   written: string
 }
@@ -151,12 +160,14 @@ export async function writeHtmlTopic(options: HtmlWriteOptions): Promise<HtmlWri
 
   await DirectoryManager.writeFileAtomic(filePath, stamped)
 
-  return {filePath, ok: true, written: stamped}
+  const warnings = computeRelatedWarnings({contextTreeRoot, relatedAttr: validation.relatedAttr})
+
+  return {filePath, ok: true, warnings, written: stamped}
 }
 
 type ValidatedTopic =
   | {errors: readonly HtmlWriteError[]; ok: false}
-  | {ok: true; topicPath: string}
+  | {ok: true; relatedAttr: string | undefined; topicPath: string}
 
 /**
  * Pure validation pass — does not touch disk. Exposed so the executor
@@ -235,7 +246,7 @@ export function validateHtmlTopic(html: string): ValidatedTopic {
     return {errors, ok: false}
   }
 
-  return {ok: true, topicPath: topicPath as string}
+  return {ok: true, relatedAttr: topic.attributes.related, topicPath: topicPath as string}
 }
 
 function isRegisteredElementName(tag: string): tag is ElementName {
@@ -250,12 +261,17 @@ function toAttributeError(tag: ElementName, error: ValidationError): HtmlWriteEr
  * Resolve a `<bv-topic path="...">` attribute to an absolute on-disk
  * path inside the project's context-tree directory. The topic path is
  * sanitised: backslashes normalised to forward slashes, leading slashes
- * stripped, `..` segments rejected. The current storage layout is
- * `.brv/context-tree/`; this resolver is the single point that
- * encodes that convention.
+ * stripped, `..` segments rejected. A trailing `.html` is stripped
+ * before re-appending so `path="x/y"` and `path="x/y.html"` both
+ * resolve to `x/y.html` — the dream→curate handoff emits the suffixed
+ * form, the convention elsewhere is the bare form, and both must
+ * collide on the path-exists guard to keep the merge workflow from
+ * silently producing a doubled-extension stale survivor. The current
+ * storage layout is `.brv/context-tree/`; this resolver is the single
+ * point that encodes that convention.
  */
 function topicPathToFilePath(contextTreeRoot: string, topicPath: string): string {
-  const normalized = topicPath.replaceAll('\\', '/').replace(/^\/+/, '')
+  const normalized = topicPath.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\.html$/i, '')
   const segments = normalized.split('/').filter((s) => s.length > 0)
 
   for (const segment of segments) {

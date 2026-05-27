@@ -25,6 +25,7 @@ import {appendFileSync, existsSync} from 'node:fs'
 import {basename, join, relative, sep} from 'node:path'
 
 import type {ISearchKnowledgeService} from '../../../agent/infra/sandbox/tools-sdk.js'
+import type {TaskCancelRequest} from '../../../shared/transport/events/task-events.js'
 import type {BrvConfig} from '../../core/domain/entities/brv-config.js'
 import type {
   BillingPinChangedPayload,
@@ -57,17 +58,13 @@ import {
   TransportStateEventNames,
   TransportTaskEventNames,
 } from '../../core/domain/transport/schemas.js'
-import {FileContextTreeArchiveService} from '../context-tree/file-context-tree-archive-service.js'
 import {regenerateContextTreeIndex} from '../context-tree/index-generator.js'
 import {RuntimeSignalStore} from '../context-tree/runtime-signal-store.js'
 import {bumpSidecarOnCurateWrite} from '../context-tree/tool-mode-sidecar-updaters.js'
-import {DreamLockService} from '../dream/dream-lock-service.js'
 import {DreamLogStore} from '../dream/dream-log-store.js'
 import {DreamStateService} from '../dream/dream-state-service.js'
-import {DreamTrigger} from '../dream/dream-trigger.js'
 import {type DreamKind, finalizeDreamSession, scanDreamCandidates} from '../dream/tool-mode/dream-session.js'
 import {CurateExecutor} from '../executor/curate-executor.js'
-import {DreamExecutor} from '../executor/dream-executor.js'
 import {FolderPackExecutor} from '../executor/folder-pack-executor.js'
 import {QueryExecutor} from '../executor/query-executor.js'
 import {SearchExecutor} from '../executor/search-executor.js'
@@ -77,6 +74,8 @@ import {FileCurateLogStore} from '../storage/file-curate-log-store.js'
 import {FileReviewBackupStore} from '../storage/file-review-backup-store.js'
 import {TaskUsageAggregator} from '../telemetry/task-usage-aggregator.js'
 import {AgentInstanceDiscovery} from '../transport/agent-instance-discovery.js'
+import {handleAgentCancelEvent} from './agent-cancel-listener.js'
+import {handleExecutorTerminalError} from './agent-executor-error.js'
 import {createAgentLogger} from './agent-logger.js'
 import {PostWorkRegistry} from './post-work-registry.js'
 import {resolveSessionId} from './session-resolver.js'
@@ -479,6 +478,12 @@ async function start(): Promise<void> {
     )
   })
 
+  transport.on<TaskCancelRequest>(TransportTaskEventNames.CANCEL, ({taskId}) => {
+    if (!agent || !transport) return
+    // eslint-disable-next-line no-void
+    void handleAgentCancelEvent({agent, log: agentLog, taskId, transport})
+  })
+
   // 8. Register with transport server (for TransportHandlers tracking)
   await transport.requestWithAck('agent:register', {projectPath})
 
@@ -497,8 +502,7 @@ async function executeTask(
   storagePath: string,
   runtimeSignalStore: IRuntimeSignalStore,
 ): Promise<void> {
-  const {clientCwd, clientId, content, files, folderPath, force, reviewDisabled, taskId, trigger, type, worktreeRoot} =
-    task
+  const {clientCwd, clientId, content, files, folderPath, reviewDisabled, taskId, trigger, type, worktreeRoot} = task
   if (!transport || !agent) return
 
   // Search + tool-mode query + tool-mode curate are pure deterministic
@@ -508,7 +512,7 @@ async function executeTask(
   if (
     type !== 'search' &&
     type !== 'query-tool-mode' &&
-    type !== 'curate-html-direct' &&
+    type !== 'curate-tool-mode' &&
     type !== 'dream-scan' &&
     type !== 'dream-finalize'
   ) {
@@ -605,7 +609,6 @@ async function executeTask(
     if (
       type === 'curate' ||
       type === 'curate-folder' ||
-      type === 'dream' ||
       type === 'dream-finalize' ||
       type === 'dream-scan'
     ) {
@@ -613,7 +616,7 @@ async function executeTask(
     }
 
     try {
-      let result: string
+      let result: string = ''
       let logId: string | undefined
       // Captured during curate / curate-folder; submitted to the registry
       // after `task:completed` so the user does not wait on Phase 4.
@@ -681,7 +684,7 @@ async function executeTask(
           break
         }
 
-        case 'curate-html-direct': {
+        case 'curate-tool-mode': {
           // Tool-mode curate: no LLM dispatch, no provider gate, no
           // usage aggregator. Calling agent (typically over MCP) has
           // already authored the <bv-topic> HTML; daemon validates +
@@ -763,10 +766,10 @@ async function executeTask(
               completedAt,
               confirmOverwrite: Boolean(confirmOverwrite),
               existedBefore,
-              // Absolute path — the review-handler (and dream-executor) treat
-              // `op.filePath` as absolute and call `relative(contextTreeDir, ...)`
-              // to derive a display key. Storing a relative path here makes
-              // the entry unmatchable in `brv review approve`.
+              // Absolute path — the review-handler treats `op.filePath` as
+              // absolute and calls `relative(contextTreeDir, ...)` to derive
+              // a display key. Storing a relative path here makes the entry
+              // unmatchable in `brv review approve`.
               filePath: writeResult.ok ? writeResult.filePath : undefined,
               id: entryId,
               meta,
@@ -783,20 +786,20 @@ async function executeTask(
             // so a transient FS error doesn't fail an otherwise-successful
             // curate.
             agentLog(
-              `curate-html-direct: failed to persist log entry for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+              `curate-tool-mode: failed to persist log entry for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
             )
           }
 
           // Regenerate the context-tree index so the new topic appears in
           // index.html. Deferred to postWorkRegistry (drained below): it
           // runs after task:completed — off the user-facing latency path —
-          // and is per-project serialized, so concurrent curate-html-direct
+          // and is per-project serialized, so concurrent curate-tool-mode
           // tasks cannot race on index.html.
           if (writeResult.ok) {
             postWork = () =>
               regenerateContextTreeIndex({
                 contextTreeRoot,
-                log: (msg) => agentLog(`curate-html-direct ${taskId}: ${msg}`),
+                log: (msg) => agentLog(`curate-tool-mode ${taskId}: ${msg}`),
                 projectName: basename(projectPath),
               })
           }
@@ -812,52 +815,12 @@ async function executeTask(
                 overwrote: existedBefore && Boolean(confirmOverwrite),
                 status: 'ok',
                 topicPath: topicPathResolved,
+                // Omit `warnings` from the wire envelope when empty so
+                // existing consumers (CI logs, MCP host renderers) do
+                // not see a noisy `"warnings": []` on every clean write.
+                ...(writeResult.warnings.length > 0 ? {warnings: writeResult.warnings} : {}),
               })
             : JSON.stringify({errors: writeResult.errors, status: 'validation-failed'})
-
-          break
-        }
-
-        case 'dream': {
-          const brvDir = join(projectPath, BRV_DIR)
-          const dreamLockService = new DreamLockService({baseDir: brvDir})
-          const dreamStateService = new DreamStateService({baseDir: brvDir})
-
-          // Run trigger check (acquires lock if eligible).
-          // Gate 3 (queue) is pre-checked by the daemon (TransportHandlers.preDispatchCheck
-          // for CLI dispatch, onAgentIdle for idle-trigger dispatch), so the agent treats
-          // its own queue view as empty. Gates 1 (time) and 2 (activity) are re-checked here
-          // as defense-in-depth in case state drifted between dispatch and execution.
-          const dreamTrigger = new DreamTrigger({
-            dreamLockService,
-            dreamStateService,
-            getQueueLength: () => 0,
-          })
-          const eligibility = await dreamTrigger.tryStartDream(projectPath, force)
-          if (!eligibility.eligible) {
-            result = `Dream skipped: ${eligibility.reason}`
-            break
-          }
-
-          const dreamExecutor = new DreamExecutor({
-            archiveService: new FileContextTreeArchiveService(runtimeSignalStore),
-            curateLogStore: new FileCurateLogStore({baseDir: storagePath}),
-            dreamLockService,
-            dreamLogStore: new DreamLogStore({baseDir: brvDir}),
-            dreamStateService,
-            reviewBackupStore: new FileReviewBackupStore(brvDir),
-            runtimeSignalStore,
-            searchService: searchKnowledgeService,
-          })
-          const dreamResult = await dreamExecutor.executeWithAgent(agent, {
-            priorMtime: eligibility.priorMtime,
-            projectRoot: projectPath,
-            ...(reviewDisabled === undefined ? {} : {reviewDisabled}),
-            taskId,
-            trigger: trigger ?? 'cli',
-          })
-          result = dreamResult.result
-          logId = dreamResult.logId
 
           break
         }
@@ -901,7 +864,15 @@ async function executeTask(
                   action: 'ARCHIVE',
                   file: path,
                   needsReview: false,
-                  previousTexts: {[path]: finalizeResult.previousTexts[path] ?? ''},
+                  // Pre-archive metadata captured by finalizeDreamSession so
+                  // undo can restore not just the file body but the mtime
+                  // and runtime signals that drove the prune decision (e.g.
+                  // importance < 35, stale-mtime > 60d). Without this,
+                  // undo restores the file but resets observable state and
+                  // the topic stops re-surfacing on the next prune scan.
+                  previousMtimes: {[path]: finalizeResult.previousMtimes[path]},
+                  previousSignals: {[path]: finalizeResult.previousSignals[path]},
+                  previousTexts: {[path]: finalizeResult.previousTexts[path]},
                   reason: 'tool-mode dream finalize',
                   type: 'PRUNE',
                 })),
@@ -927,7 +898,7 @@ async function executeTask(
               // Archiving removed topics — refresh index.html so they
               // drop out of the navigation index. Deferred to
               // postWorkRegistry (per-project serialized, runs after
-              // task:completed) — same rationale as curate-html-direct.
+              // task:completed) — same rationale as curate-tool-mode.
               postWork = () =>
                 regenerateContextTreeIndex({
                   contextTreeRoot,
@@ -1081,16 +1052,7 @@ async function executeTask(
         postWorkRegistry.submit(projectPath, postWork)
       }
     } catch (error) {
-      // Emit task:error
-      const errorData = serializeTaskError(error)
-      agentLog(`task:error taskId=${taskId} error=${errorData.message}`)
-      try {
-        transport.request(TransportTaskEventNames.ERROR, {clientId, error: errorData, projectPath, taskId})
-      } catch (error_) {
-        agentLog(
-          `task:error send failed taskId=${taskId}: ${error_ instanceof Error ? error_.message : String(error_)}`,
-        )
-      }
+      handleExecutorTerminalError({clientId, error, log: agentLog, projectPath, taskId, transport})
     } finally {
       cleanupForwarding?.()
     }

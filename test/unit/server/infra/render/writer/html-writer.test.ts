@@ -388,6 +388,46 @@ describe('html-writer', () => {
         expect(result.ok).to.equal(true)
       })
 
+      it('surfaces related-ref warnings alongside a successful write', async () => {
+        // The warner runs after the atomic write, never blocks it.
+        // Broken refs are reported as `warnings` on a successful write
+        // so the calling agent sees them in the curate envelope. The
+        // write itself is never rejected — refs are advisory.
+        // Seed `security/oauth.html` so the `.html` ref resolves cleanly
+        // and only the broken one surfaces.
+        await writeHtmlTopic({
+          contextTreeRoot: tmpRoot,
+          rawHtml: '<bv-topic path="security/oauth" title="OAuth"></bv-topic>',
+        })
+
+        const html = `<bv-topic path="security/jwt" title="JWT" related="@security/oauth.html, @security/missing">
+  <bv-reason>Document JWT.</bv-reason>
+</bv-topic>`
+        const result = await writeHtmlTopic({contextTreeRoot: tmpRoot, rawHtml: html})
+        expect(result.ok).to.equal(true)
+        if (result.ok) {
+          expect(result.warnings).to.have.lengthOf(1)
+          expect(result.warnings[0]).to.include('@security/missing')
+        }
+      })
+
+      it('returns an empty warnings array when every related ref resolves', async () => {
+        // Seed the target topic so the `.html` ref resolves cleanly.
+        await writeHtmlTopic({
+          contextTreeRoot: tmpRoot,
+          rawHtml: '<bv-topic path="security/oauth" title="OAuth"></bv-topic>',
+        })
+
+        const html = `<bv-topic path="security/jwt" title="JWT" related="@security/oauth.html">
+  <bv-reason>Document JWT.</bv-reason>
+</bv-topic>`
+        const result = await writeHtmlTopic({contextTreeRoot: tmpRoot, rawHtml: html})
+        expect(result.ok).to.equal(true)
+        if (result.ok) {
+          expect(result.warnings).to.have.lengthOf(0)
+        }
+      })
+
       it('does not affect writes to a different path (collision is exact-path scoped)', async () => {
         const first = await writeHtmlTopic({contextTreeRoot: tmpRoot, rawHtml: VALID_TOPIC})
         expect(first.ok).to.equal(true)
@@ -428,6 +468,74 @@ describe('html-writer', () => {
         } finally {
           chmodSync(first.filePath, 0o644)
         }
+      })
+    })
+
+    describe('path normalization (idempotent .html stripping)', () => {
+      // Background: dream-scan emits candidate paths with the `.html`
+      // suffix (e.g. "auth/jwt.html") and the documented dream→curate
+      // merge workflow tells the agent to write the survivor at that
+      // path. Without this normalization the writer doubled the
+      // extension into `auth/jwt.html.html`, reported `ok: true`, and
+      // silently bypassed the path-exists guard — producing a stale
+      // survivor while the agent archived the loser thinking the merge
+      // had taken effect. Both bare and `.html`-suffixed forms must
+      // resolve to the same on-disk file.
+
+      it('writes path="x/y.html" to <root>/x/y.html (not x/y.html.html)', async () => {
+        const html = '<bv-topic path="security/oauth.html" title="OAuth"><bv-rule severity="must" id="r-1">Use PKCE.</bv-rule></bv-topic>'
+        const result = await writeHtmlTopic({contextTreeRoot: tmpRoot, rawHtml: html})
+        expect(result.ok).to.equal(true)
+        if (result.ok) {
+          expect(result.filePath).to.equal(join(tmpRoot, 'security/oauth.html'))
+          expect(existsSync(result.filePath)).to.equal(true)
+          expect(
+            existsSync(join(tmpRoot, 'security/oauth.html.html')),
+            'doubled-extension file must not be created',
+          ).to.equal(false)
+        }
+      })
+
+      it('treats path="x/y" and path="x/y.html" as the same target (path-exists triggers across forms)', async () => {
+        const bare = '<bv-topic path="security/oauth" title="OAuth"><bv-rule severity="must" id="r-1">Use PKCE.</bv-rule></bv-topic>'
+        const first = await writeHtmlTopic({contextTreeRoot: tmpRoot, rawHtml: bare})
+        expect(first.ok).to.equal(true)
+
+        const suffixed = '<bv-topic path="security/oauth.html" title="OAuth v2"><bv-rule severity="must" id="r-2">Reject implicit flow.</bv-rule></bv-topic>'
+        const second = await writeHtmlTopic({contextTreeRoot: tmpRoot, rawHtml: suffixed})
+        expect(second.ok).to.equal(false)
+        if (!second.ok) {
+          const pathExists = second.errors.find((e) => e.kind === 'path-exists')
+          expect(pathExists, 'expected path-exists when .html form targets bare-form file').to.not.equal(undefined)
+        }
+      })
+
+      it('treats path="x/y.html" first then path="x/y" as the same target (reverse order)', async () => {
+        const suffixed = '<bv-topic path="security/oauth.html" title="OAuth"><bv-rule severity="must" id="r-1">Use PKCE.</bv-rule></bv-topic>'
+        const first = await writeHtmlTopic({contextTreeRoot: tmpRoot, rawHtml: suffixed})
+        expect(first.ok).to.equal(true)
+
+        const bare = '<bv-topic path="security/oauth" title="OAuth v2"><bv-rule severity="must" id="r-2">Reject implicit flow.</bv-rule></bv-topic>'
+        const second = await writeHtmlTopic({contextTreeRoot: tmpRoot, rawHtml: bare})
+        expect(second.ok).to.equal(false)
+        if (!second.ok) {
+          const pathExists = second.errors.find((e) => e.kind === 'path-exists')
+          expect(pathExists, 'expected path-exists when bare form targets .html-form file').to.not.equal(undefined)
+        }
+      })
+
+      it('confirmOverwrite works regardless of which form was used first', async () => {
+        const bare = '<bv-topic path="security/oauth" title="OAuth"><bv-rule severity="must" id="r-1">Use PKCE.</bv-rule></bv-topic>'
+        await writeHtmlTopic({contextTreeRoot: tmpRoot, rawHtml: bare})
+
+        const suffixed = '<bv-topic path="security/oauth.html" title="OAuth v2"><bv-rule severity="must" id="r-2">Reject implicit flow.</bv-rule></bv-topic>'
+        const result = await writeHtmlTopic({confirmOverwrite: true, contextTreeRoot: tmpRoot, rawHtml: suffixed})
+        expect(result.ok).to.equal(true)
+
+        const filesUnderSecurity = await readdir(join(tmpRoot, 'security'))
+        const htmlFiles = filesUnderSecurity.filter((f) => f.endsWith('.html'))
+        expect(htmlFiles, 'only one .html file should exist under security/').to.have.lengthOf(1)
+        expect(htmlFiles[0]).to.equal('oauth.html')
       })
     })
   })

@@ -2,6 +2,32 @@
 
 All notable user-facing changes to ByteRover CLI will be documented in this file.
 
+## [3.16.0]
+
+### Added
+- **Cancel a running task with `--cancel <id>`.** `brv curate`, `brv query`, and `brv dream` now accept `--cancel <taskId>` to stop a task started from another terminal or from a detached background run. In the foreground, Ctrl+C sends the cancel before exiting (a second press hard-exits with code 130). In the REPL, Ctrl+Q cancels the active curate or query task, and a footer hint shows when it's armed. `brv webui` also adds a Cancel button on task list rows and the task detail header.
+- **Opt out of update checks with `update.checkForUpdates`.** New setting (boolean, default `true`). Running `brv settings set update.checkForUpdates false` silences the y/n update prompt at startup and stops the background auto-update from running. Manual `brv update` still works when you want to upgrade on your own schedule.
+
+### Fixed
+- **Custom models accepted on more OpenAI-compatible providers.** Connecting DeepSeek, GLM, Moonshot, Cerebras, Cohere, DeepInfra, Together AI, MiniMax, Perplexity, or another OpenAI-compatible endpoint with a non-default `--model` no longer fails with a "Model X is not supported for provider 'gemini'" error. The registry now routes all OpenAI-compatible providers through the right model whitelist, so any model your endpoint exposes is accepted.
+- **Security dependency update.** Patched npm dependencies to clear several `npm audit` advisories.
+
+## [3.15.1]
+
+### Fixed
+- **Review settings panel restored in `brv webui`.** The on/off toggle for review-before-changes (Configuration → Version Control) went missing in 3.15.0. It is back in the same spot, alongside Identity and Remotes.
+- **`brv update` tidies up old versions.** Each upgrade used to leave previous CLI versions sitting in the plugin cache, slowly eating disk space. The cache now keeps only the version you just installed.
+
+## [3.15.0]
+
+### Added
+- **Tune BRV with `brv settings`.** Adjust knobs like agent pool size, concurrent tasks per project, LLM iteration budget, and task-history retention without editing source or rebuilding. `brv settings` lists every option by category (concurrency, LLM, task history); `brv settings get/set/reset <key>` operates on a single value. Use plain numbers for count keys (e.g. `agentPool.maxSize 25`) and duration strings for time keys (e.g. `llm.iterationBudgetMs 30m` or `1h 30m` or raw ms). Every subcommand also accepts `--format json`. Values persist at `<BRV_DATA_DIR>/settings.json` and can be browsed from the Configuration page in `brv webui`. Run `brv restart` after a change.
+- **Folder metadata in `brv webui` Contexts.** Folders in the context tree now render their title, summary, tags, and related links in the detail panel, the same way files already did.
+
+### Changed
+- **Configuration page in `brv webui` reorganized.** Settings now live under three sections (General, Connectors, Version Control) instead of one long page, so the new agent-pool and task-history controls have room alongside the existing identity, provider, and remote settings.
+- **`--timeout` flag is deprecated.** Passing `--timeout` on commands that accepted it now logs a one-line deprecation notice and has no effect. Use `brv settings set llm.iterationBudgetMs <duration>` (e.g. `30m`, `1h`, or raw ms) to change the LLM iteration budget instead, then run `brv restart`.
+
 ## [3.14.0]
 
 ### Added

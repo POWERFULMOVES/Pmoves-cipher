@@ -1,20 +1,16 @@
 import {Args, Command, Flags} from '@oclif/core'
 
 import {continueSession, kickoffSession, resolveProjectRoot} from '../../lib/curate-session.js'
-import {type DaemonClientOptions} from '../../lib/daemon-client.js'
+import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
-import {DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS} from '../../lib/task-client.js'
+import {argvRequestsJsonFormat, CURATE_REMOVED_FLAGS, findRemovedFlagMessage} from '../../lib/removed-flags.js'
 
 /** Parsed flags type */
 type CurateFlags = {
-  detach?: boolean
-  files?: string[]
-  folder?: string[]
   format?: 'json' | 'text'
   overwrite?: boolean
   response?: string
   session?: string
-  timeout?: number
 }
 
 export default class Curate extends Command {
@@ -43,20 +39,6 @@ Bad examples:
     '<%= config.bin %> <%= command.id %> --session <id> --response "..." --overwrite --format json',
   ]
   public static flags = {
-    detach: Flags.boolean({
-      default: false,
-      description: 'Queue task and exit without waiting for completion',
-    }),
-    files: Flags.string({
-      char: 'f',
-      description: 'Include specific file paths for critical context (max 5 files)',
-      multiple: true,
-    }),
-    folder: Flags.string({
-      char: 'd',
-      description: 'Folder path to pack and analyze (triggers folder pack flow)',
-      multiple: true,
-    }),
     format: Flags.string({
       default: 'text',
       description: 'Output format (text or json)',
@@ -83,12 +65,6 @@ Bad examples:
       // --session implies the continuation step.
       description: 'Session id to continue (returned by a prior kickoff)',
     }),
-    timeout: Flags.integer({
-      default: DEFAULT_TIMEOUT_SECONDS,
-      description: 'Maximum seconds to wait for task completion',
-      max: MAX_TIMEOUT_SECONDS,
-      min: MIN_TIMEOUT_SECONDS,
-    }),
   }
 
   protected getDaemonClientOptions(): DaemonClientOptions {
@@ -101,16 +77,32 @@ Bad examples:
     // provider on this command. (The env-var `BRV_CURATE_TOOL_MODE`
     // scaffolding from M1 is removed in M3 — presence/absence is a
     // no-op now.)
+    const rawArgv = process.argv.slice(2)
+    const removedFlagMessage = findRemovedFlagMessage(rawArgv, CURATE_REMOVED_FLAGS)
+    if (removedFlagMessage) {
+      // Surface as a JSON envelope when the caller asked for JSON — agents
+      // parsing stdout-JSON treat unexpected stderr lines as a hard crash.
+      if (argvRequestsJsonFormat(rawArgv)) {
+        this.emitToolModeEnvelope(
+          {
+            errors: [{kind: 'removed-flag', message: removedFlagMessage}],
+            ok: false,
+            status: 'failed',
+          },
+          'json',
+        )
+        return
+      }
+
+      this.error(removedFlagMessage, {exit: 1})
+    }
+
     const {args, flags: rawFlags} = await this.parse(Curate)
     const flags: CurateFlags = {
-      detach: rawFlags.detach,
-      files: rawFlags.files,
-      folder: rawFlags.folder,
       format: rawFlags.format === 'json' ? 'json' : rawFlags.format === 'text' ? 'text' : undefined,
       overwrite: rawFlags.overwrite,
       response: rawFlags.response,
       session: rawFlags.session,
-      timeout: rawFlags.timeout,
     }
     const format: 'json' | 'text' = flags.format ?? 'text'
 
@@ -170,6 +162,9 @@ Bad examples:
       }
     } else if (envelope.status === 'done') {
       this.log(`✓ Curated to ${envelope.filePath}`)
+      for (const warning of envelope.warnings ?? []) {
+        this.log(`  ⚠ ${warning}`)
+      }
     } else {
       this.log('✗ Curate failed')
       for (const err of envelope.errors ?? []) {
@@ -201,13 +196,34 @@ Bad examples:
       return
     }
 
-    const envelope = await continueSession({
-      confirmOverwrite: flags.overwrite ?? false,
-      projectRoot: resolveProjectRoot(),
-      response: flags.response,
-      sessionId,
-    })
-    this.emitToolModeEnvelope(envelope, format)
+    // Continuation routes the write through the daemon (curate-tool-mode
+    // task) so the curate appears in the WebUI Tasks panel and cancel
+    // surfaces. Kickoff stays in-process — no daemon round-trip needed
+    // to emit the generate prompt.
+    const {response} = flags
+    const confirmOverwrite = flags.overwrite ?? false
+    try {
+      await withDaemonRetry(async (client) => {
+        const envelope = await continueSession({
+          client,
+          confirmOverwrite,
+          format,
+          projectRoot: resolveProjectRoot(),
+          response,
+          sessionId,
+        })
+        this.emitToolModeEnvelope(envelope, format)
+      }, this.getDaemonClientOptions())
+    } catch (error) {
+      this.emitToolModeEnvelope(
+        {
+          errors: [{kind: 'daemon-error', message: formatConnectionError(error)}],
+          ok: false,
+          status: 'failed',
+        },
+        format,
+      )
+    }
   }
 
   /**
