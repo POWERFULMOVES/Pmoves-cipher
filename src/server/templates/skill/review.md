@@ -35,7 +35,7 @@ brv review --enable                              # resume queueing review items
 
 ## Toggle The Review Log
 
-`brv review` with no subcommand shows whether review is on or off. `--disable` stops `brv curate` from prompting for review on high-impact ops, suppresses the per-op review marker in detached curate-log entries, and prevents `brv dream` from queueing review items. `--enable` reverses all of the above. Existing pending items are unaffected — they remain listed by `brv review pending` and can still be approved or rejected.
+`brv review` with no subcommand shows whether review is on or off. `--disable` stops `brv curate` from prompting for review on high-impact ops, suppresses per-op review markers in curate-log entries, and prevents `brv dream` from queueing review items. `--enable` reverses all of the above. Existing pending items are unaffected — they remain listed by `brv review pending` and can still be approved or rejected.
 
 Confirm with the user before flipping the toggle: disabling silently auto-applies future high-impact curates, which is the opposite of HITL.
 
