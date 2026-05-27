@@ -91,8 +91,9 @@ export class YamlMcpConfigWriter implements IMcpConfigWriter {
     if (await this.fileService.exists(filePath)) {
       try {
         data = parseYamlAsRecord(await this.fileService.read(filePath))
-      } catch {
-        // File exists but contains invalid/empty YAML — start fresh
+      } catch (error) {
+        const details = error instanceof Error ? error.message : String(error)
+        throw new Error(`Cannot update YAML MCP config at ${filePath}: ${details}`)
       }
     }
 

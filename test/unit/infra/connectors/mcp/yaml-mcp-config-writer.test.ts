@@ -173,19 +173,52 @@ describe('YamlMcpConfigWriter', () => {
       expect(parsed.level1.level2.brv).to.deep.equal(serverConfig)
     })
 
-    it('starts fresh when existing YAML is malformed', async () => {
+    it('throws and preserves existing content when YAML is malformed', async () => {
       const writer = new YamlMcpConfigWriter({
         fileService,
         serverKeyPath: ['mcp_servers', 'brv'],
       })
       const filePath = path.join(testDir, 'config.yaml')
-      await writeFile(filePath, ':\n\t[bad: yaml')
+      const originalContent = ':\n\t[bad: yaml'
+      await writeFile(filePath, originalContent)
       const serverConfig = {command: 'brv'}
 
-      await writer.write(filePath, serverConfig)
+      let error: unknown
+      try {
+        await writer.write(filePath, serverConfig)
+      } catch (error_) {
+        error = error_
+      }
 
-      const parsed = yamlLoad(await readFile(filePath, 'utf8')) as Record<string, Record<string, unknown>>
-      expect(parsed.mcp_servers.brv).to.deep.equal(serverConfig)
+      expect(error).to.be.instanceOf(Error)
+      if (!(error instanceof Error)) throw new Error('Expected write to throw')
+
+      expect(error.message).to.include('Cannot update YAML MCP config')
+      expect(await readFile(filePath, 'utf8')).to.equal(originalContent)
+    })
+
+    it('throws and preserves existing content when YAML root is not a mapping', async () => {
+      const writer = new YamlMcpConfigWriter({
+        fileService,
+        serverKeyPath: ['mcp_servers', 'brv'],
+      })
+      const filePath = path.join(testDir, 'config.yaml')
+      const originalContent = '- a\n- b\n'
+      await writeFile(filePath, originalContent)
+      const serverConfig = {command: 'brv'}
+
+      let error: unknown
+      try {
+        await writer.write(filePath, serverConfig)
+      } catch (error_) {
+        error = error_
+      }
+
+      expect(error).to.be.instanceOf(Error)
+      if (!(error instanceof Error)) throw new Error('Expected write to throw')
+
+      expect(error.message).to.include('Cannot update YAML MCP config')
+      expect(await readFile(filePath, 'utf8')).to.equal(originalContent)
     })
   })
 

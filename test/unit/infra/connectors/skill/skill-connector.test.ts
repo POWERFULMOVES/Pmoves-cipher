@@ -1,5 +1,5 @@
 import {expect} from 'chai'
-import {mkdir, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, readdir, readFile, rm, writeFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import path from 'node:path'
 
@@ -39,6 +39,16 @@ describe('SkillConnector', () => {
   describe('connectorType', () => {
     it('should have type "skill"', () => {
       expect(skillConnector.connectorType).to.equal('skill')
+    })
+  })
+
+  describe('managed skill files', () => {
+    it('should enumerate every skill template markdown file', async () => {
+      const templateFileNames = (await readdir(path.resolve('src/server/templates/skill')))
+        .filter((fileName) => fileName.endsWith('.md'))
+        .sort()
+
+      expect([...SKILL_FILE_NAMES].sort()).to.deep.equal(templateFileNames)
     })
   })
 

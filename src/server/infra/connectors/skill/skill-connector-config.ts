@@ -138,6 +138,7 @@ export const SKILL_FILE_NAMES = [
   'review.md',
   'swarm.md',
   'vc.md',
+  'dream.md',
   'history.md',
   'troubleshooting.md',
 ] as const
