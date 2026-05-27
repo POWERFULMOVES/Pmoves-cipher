@@ -38,12 +38,45 @@ brv dream scan --format json
 
 Returns a `sessionId` (uuid) and `candidates` keyed by kind. Hold the `sessionId` until Phase 3.
 
-| Kind | Meaning | How to act |
-|---|---|---|
-| `link` | BM25-similar topic pairs not yet cross-linked | Extend each topic's `related=` attribute on `<bv-topic>` with the partner's path (comma-separated `@domain/topic` refs, no `.html` extension), then re-call `brv curate` at each existing path. The `path-exists` kickoff branch returns `existingContent`; merge your additions in and continue with `--overwrite`. |
-| `merge` | BM25 near-duplicates | Pick a survivor, author HTML combining both topic bodies, write via the same `brv curate` `path-exists` / `--overwrite` flow at the survivor's existing path, then archive the loser in Phase 3. |
-| `prune` | Low-importance or stale-mtime topics | Decide per candidate: archive in Phase 3, leave alone, or treat as a `merge` candidate against another topic. |
-| `synthesize` | Per-domain topic groups plus existing synthesis topics | Author a new `<bv-topic>` at a fresh path under `synthesis/<slug>` and call `brv curate` — no `path-exists` branch applies because the path is new. |
+- `link` — BM25-similar topic pairs not yet cross-linked. To act: extend each topic's `related=` attribute on `<bv-topic>` (comma-separated refs) with the partner's path, then re-call `brv curate` at each existing path. The documented convention is the bare `@domain/topic` form (see `curate.md` examples like `related="@security/cookies,@security/oauth"`); the topic loader normalizes by appending `.html` internally, so both `@security/oauth` and `@security/oauth.html` resolve to the same edge. Prefer bare to match the convention; if you copy a path verbatim from `dream scan` (which emits the `.html`-suffixed form), that also works. When you submit the authored HTML during the curate continuation step, the writer detects that the topic already exists and returns `kind: "path-exists"` with the topic's `existingContent`; merge your additions in and re-emit with `--overwrite` to apply the write.
+- `merge` — BM25 near-duplicates. Pick a survivor, author HTML combining both topic bodies, write it via the same `brv curate` `path-exists` / `--overwrite` flow at the survivor's existing path, then archive the loser via `brv dream finalize`. The writer normalizes the `<bv-topic path="...">` attribute idempotently — both `path="auth/jwt"` (bare convention) and `path="auth/jwt.html"` (the form `dream scan` emits) resolve to the same on-disk file at `auth/jwt.html` and trigger the path-exists guard identically. Either form is safe.
+- `prune` — Low-importance (sidecar `importance < 35`) or stale-mtime (draft >60d / validated >120d) topics. Topics with `maturity: 'core'` are never surfaced. Each candidate carries `reason: 'low-importance' | 'stale-mtime' | 'both'`, `daysSinceModified`, and the full `signals` block. Decide per candidate: archive it via `brv dream finalize`, leave it alone, or treat it as a `merge` candidate against another topic.
+- `synthesize` — Per-domain topic groups plus existing synthesis topics. To act: author a new `<bv-topic>` at a fresh path under `synthesis/<slug>` and call `brv curate` to write it — no `path-exists` branch applies because the path is new.
+
+Sample scan envelope (top-level JSON object emitted by `--format json`):
+
+```json
+{
+  "sessionId": "8c3f9e2a-...",
+  "status": "ok",
+  "candidates": {
+    "link": [
+      {"pair": ["security/jwt.html", "security/sessions.html"], "score": 0.71,
+       "htmlA": "<bv-topic path=\"security/jwt\" ...>...</bv-topic>",
+       "htmlB": "<bv-topic path=\"security/sessions\" ...>...</bv-topic>"}
+    ],
+    "merge": [
+      {"pair": ["auth/oauth.html", "auth/oauth-flow.html"], "score": 0.93,
+       "htmlA": "<bv-topic path=\"auth/oauth\" ...>...</bv-topic>",
+       "htmlB": "<bv-topic path=\"auth/oauth-flow\" ...>...</bv-topic>"}
+    ],
+    "prune": [
+      {"path": "legacy/old-notes.html", "reason": "both",
+       "daysSinceModified": 70,
+       "signals": {"importance": 15, "maturity": "draft", "accessCount": 0, "recency": 0.1, "updateCount": 0},
+       "html": "<bv-topic path=\"legacy/old-notes\" ...>...</bv-topic>"}
+    ],
+    "synthesize": {
+      "domains": [
+        {"domain": "caching", "topics": [{"path": "caching/redis.html", "title": "Redis", "summary": "..."}]}
+      ],
+      "existingSyntheses": [
+        {"path": "synthesis/caching-overview.html", "title": "Caching overview", "summary": "..."}
+      ]
+    }
+  }
+}
+```
 
 Filter scope or kinds when the tree is large:
 
@@ -55,7 +88,7 @@ brv dream scan --kinds link,merge --scope security/ --max-candidates 20 --format
 
 Invoke `brv curate` (per `curate.md`) for each candidate you decide to act on. Keep the `sessionId` from Phase 1 — you need it for finalize.
 
-For `link` and `merge` actions, the existing topic path returns `kind: "path-exists"` on curate kickoff. Read `existingContent`, merge with your additions, and continue the same curate session with `--overwrite`. Never shrink the topic — enrichment only; every prior fact stays.
+For `link` and `merge` actions, the writer returns `kind: "path-exists"` when you submit the authored HTML during the curate continuation step (the kickoff step just hands you a `generate-html` prompt with no validation). Read `existingContent` from that error, merge with your additions, and continue the same curate session with `--overwrite`. Never shrink the topic — enrichment only; every prior fact stays.
 
 ### Phase 3 — Finalize
 
@@ -68,18 +101,47 @@ Archive paths MUST match exactly what `dream scan` emitted: full relative path u
 - `--archive` and `--archive-file <path>` are mutually exclusive; exactly one is required.
 - The archive list is capped at 200 entries per call; split into multiple finalize calls for larger batches.
 
+Sample finalize response (top-level JSON object emitted by `--format json`):
+
+```json
+{
+  "archived": ["legacy/old-notes.html", "auth/oauth-flow.html"],
+  "skipped": [],
+  "logId": "drm-1779360938860",
+  "status": "ok"
+}
+```
+
+`skipped` entries carry `{"path": "...", "reason": "already-archived|not-found|rename-failed|unsafe-path"}`. `logId` identifies the dream-log entry (only emitted when at least one path was archived); `brv dream undo` takes no arguments and always reverts the most recent finalize from the on-disk dream state.
+
 ### Undo The Most Recent Finalize
 
 ```bash
 brv dream undo --format json
 ```
 
-Restores archived topics to their original locations (content byte-identical; mtime resets to current time). Curate writes from Phase 2 are NOT rolled back by undo — use `brv review reject <taskId>` for those (see `review.md`).
+Restores archived topics to their original locations bit-exact: content, original mtime, and sidecar runtime signals (importance / maturity / accessCount / etc.) are all restored. Pruned topics that re-qualify will re-surface on the next scan. Curate writes from Phase 2 are NOT rolled back by undo — use `brv review reject <taskId>` for those (see `review.md`).
+
+### Worked Example — Prune The Stalest Topic (No Curate Detour)
+
+```bash
+# 1. Scan only prune candidates
+brv dream scan --kinds prune --format json
+# → response carries candidates.prune[]; pick the highest daysSinceModified entry,
+#   say "legacy/old-notes.html"
+
+# 2. Archive it. sessionId from step 1 is opaque; pass any string in v1.
+brv dream finalize --session <id> --archive legacy/old-notes.html --format json
+# → archived: ["legacy/old-notes.html"], skipped: [], logId: "drm-..."
+
+# 3. If you change your mind, revert.
+brv dream undo --format json
+```
 
 ## Stateless v1 Notes
 
-- `brv dream sessions` returns an empty list.
-- `brv dream cancel --session <id>` is a no-op.
+- `brv dream sessions` returns an empty list — the daemon does not persist session state. The JSON envelope carries a `note` field disclosing this.
+- `brv dream cancel --session <id>` is a no-op for the same reason; its JSON envelope also carries a `note`.
 - The `sessionId` from scan is for your bookkeeping between scan and finalize; the daemon does not enforce or persist it.
 
 ## Red Flags — STOP
