@@ -25,7 +25,7 @@ Do not curate transient details, already-stored facts, or general knowledge unre
 
 ```bash
 brv curate "Authentication middleware validates JWTs in src/middleware/auth.ts and rejects expired tokens before route handlers."
-brv curate "Retry helper treats HTTP 429 as retryable with exponential backoff. Implementation: src/retry.ts uses exponential backoff with jitter."
+brv curate "Retry helper in src/retry.ts treats HTTP 429 as retryable with exponential backoff."
 brv curate view --detail
 brv review pending --format json
 ```
