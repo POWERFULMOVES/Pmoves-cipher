@@ -157,6 +157,7 @@ describe('SkillConnector', () => {
       expect(content).to.include('brv query')
       expect(content).to.include('brv curate')
       expect(content).to.include('brv curate view')
+      expect(content).to.include('brv webui')
       expect(content).to.include('## When To Use')
       expect(content).to.include('## Quick Reference')
       expect(content).not.to.include('<<<<<<<')
@@ -195,6 +196,8 @@ describe('SkillConnector', () => {
       expect(curateContent).to.include('<bv-topic')
       expect(curateContent).to.include('bv-rule')
       expect(curateContent).to.include('--overwrite')
+      expect(curateContent).to.include('localhost:7700')
+      expect(curateContent).to.include('## Example Session Responses')
     })
 
     it('should create sibling guides with When-To and Common Mistakes sections', async () => {

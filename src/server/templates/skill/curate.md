@@ -28,6 +28,7 @@ brv curate "Authentication middleware validates JWTs in src/middleware/auth.ts a
 brv curate "Retry helper in src/retry.ts treats HTTP 429 as retryable with exponential backoff."
 brv curate view --detail
 brv review pending --format json
+# After a successful curate, view the topic in the dashboard: http://localhost:7700 (Contexts page)
 ```
 
 ## Session Protocol
@@ -44,11 +45,69 @@ Curate runs as request -> response -> request:
    brv curate --session <data.sessionId> --response "<your bv-topic html>" --format json
    ```
 4. Branch on `data.status`:
-   - `done` - report `data.filePath`.
+   - `done` - report `data.filePath`, then give the user the clickable dashboard URL `http://localhost:7700` so they can see the saved topic in the Contexts page (the daemon is already serving it).
    - `needs-llm-step` with `step: "correct-html"` - fix validation errors from `data.errors[]` and continue the same session.
    - `failed` - report the error messages.
 
 If `data.errors[]` includes `kind: "path-exists"`, prefer merging the existing topic with the new facts and continue with `--overwrite`. Choose a different path only when the collision is accidental. Replace existing content only when the user explicitly asked for replacement.
+
+## Example Session Responses
+
+Every `--format json` response is wrapped in `{ "command", "data", "success", "timestamp" }`. Branch on `data.status`. The three envelopes below show a full session: kickoff, one correction turn, then completion.
+
+1. Kickoff (`brv curate "<intent>" --format json`) returns a live session asking you to author HTML:
+
+```json
+{
+  "command": "curate",
+  "data": {
+    "ok": true,
+    "status": "needs-llm-step",
+    "step": "generate-html",
+    "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": "<instructions describing the bv-topic HTML to author>"
+  },
+  "success": true,
+  "timestamp": "2026-05-29T14:30:45.123Z"
+}
+```
+
+2. If your HTML fails validation, the same session stays open with `step: "correct-html"` and the errors to fix:
+
+```json
+{
+  "command": "curate",
+  "data": {
+    "ok": false,
+    "status": "needs-llm-step",
+    "step": "correct-html",
+    "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+    "errors": [
+      {"kind": "unknown-bv-element", "message": "Unknown element <bv-note>", "tag": "bv-note"}
+    ],
+    "prompt": "<correction instructions, with the prior errors inlined>"
+  },
+  "success": false,
+  "timestamp": "2026-05-29T14:30:50.456Z"
+}
+```
+
+3. On success, `data.status` is `done` and `data.filePath` is the topic path under `.brv/context-tree/`:
+
+```json
+{
+  "command": "curate",
+  "data": {
+    "ok": true,
+    "status": "done",
+    "filePath": "security/auth.html"
+  },
+  "success": true,
+  "timestamp": "2026-05-29T14:30:55.789Z"
+}
+```
+
+→ Only now is the topic saved. Report `data.filePath` and hand the user the dashboard URL `http://localhost:7700` so they can open the Contexts page and see it.
 
 ## HTML Topic Contract
 
@@ -128,6 +187,13 @@ brv review pending --format json
 
 Then tell the user what needs review.
 
+## View What You Saved
+
+On `data.status: "done"`, the topic is written to `.brv/context-tree/<data.filePath>`. To let the user actually see it, point them at the dashboard:
+
+- Give the user the clickable URL `http://localhost:7700` — it opens the **Contexts page**, which renders the whole `.brv/context-tree/`. The path you just saved (e.g. `security/auth`) shows up as a node in the tree with its rendered content, edit controls, change history, and last-updated metadata.
+- The dashboard is already running — the daemon serves it on port `7700` by default, so the URL works the moment a curate succeeds; nothing extra to start. (`brv webui` opens the same dashboard in the browser if the user prefers a command.)
+
 ## Common Mistakes
 
 | Mistake | Correct behavior |
@@ -136,3 +202,4 @@ Then tell the user what needs review.
 | Omitting `keywords` when retrieval terms are obvious | Add comma-separated `keywords` on `<bv-topic>` |
 | Reporting completion before a session reaches `data.status: "done"` | Wait for `done` before telling the user the topic is saved |
 | Overwriting an existing path without preserving prior facts | Merge existing content unless the user explicitly wants replacement |
+| Saying the topic is saved without showing the user where to see it | After `done`, give the user the dashboard URL (`http://localhost:7700`, Contexts page) and the `filePath` |
