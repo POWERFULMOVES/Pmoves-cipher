@@ -1,15 +1,27 @@
 import {Args, Command, Flags} from '@oclif/core'
 
-import {continueSession, kickoffSession, resolveProjectRoot} from '../../lib/curate-session.js'
+import {
+  buildUnknownSessionEnvelope,
+  continueSession,
+  deleteCurateResponseFile,
+  InvalidResponseFileError,
+  kickoffSession,
+  loadCurateResponseFile,
+  parseCurateResponse,
+  peekCurateSession,
+  resolveProjectRoot,
+} from '../../lib/curate-session.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 import {argvRequestsJsonFormat, CURATE_REMOVED_FLAGS, findRemovedFlagMessage} from '../../lib/removed-flags.js'
 
 /** Parsed flags type */
 type CurateFlags = {
+  deleteResponseFile?: boolean
   format?: 'json' | 'text'
   overwrite?: boolean
   response?: string
+  responseFile?: string
   session?: string
 }
 
@@ -32,13 +44,29 @@ Bad examples:
     '# Kickoff a curate session — calling agent drives the LLM step',
     '<%= config.bin %> <%= command.id %> "Auth uses JWT with 24h expiry. Tokens stored in httpOnly cookies via authMiddleware.ts" --format json',
     '',
-    '# Continue an existing session with the calling agent\'s HTML response',
-    '<%= config.bin %> <%= command.id %> --session <id> --response "<bv-topic>...</bv-topic>" --format json',
+    '# Continue an existing session with the calling agent\'s envelope',
+    '<%= config.bin %> <%= command.id %> --session <id> --response \'{"html":"<bv-topic>...</bv-topic>","meta":{...}}\' --format json',
+    '',
+    '# Continue from a JSON file (mutually exclusive with --response)',
+    '<%= config.bin %> <%= command.id %> --session <id> --response-file envelope.json --format json',
+    '',
+    '# Continue from a JSON file and clean it up after local validation succeeds',
+    '<%= config.bin %> <%= command.id %> --session <id> --response-file envelope.json --delete-response-file --format json',
     '',
     '# Overwrite an existing topic on continuation (data-destructive — use deliberately)',
-    '<%= config.bin %> <%= command.id %> --session <id> --response "..." --overwrite --format json',
+    '<%= config.bin %> <%= command.id %> --session <id> --response-file envelope.json --overwrite --format json',
   ]
   public static flags = {
+    'delete-response-file': Flags.boolean({
+      // Opt-in cleanup paired with --response-file. After the CLI has
+      // successfully read, parsed, and envelope-validated the file
+      // locally, unlink it before dispatching to the daemon. Local
+      // validation failure leaves the file in place (the agent fixes the
+      // envelope and retries). Unlink failure aborts the curate so we
+      // never report success when the requested cleanup did not happen.
+      default: false,
+      description: 'After local validation succeeds, delete the file passed via --response-file (off by default)',
+    }),
     format: Flags.string({
       default: 'text',
       description: 'Output format (text or json)',
@@ -58,7 +86,15 @@ Bad examples:
       // interpreted by the orchestrator per the step it last emitted
       // (HTML for generate-html / correct-html). Presence without
       // --session is rejected during validation.
-      description: 'Continuation payload (paired with --session)',
+      description: 'Continuation payload (paired with --session). Mutually exclusive with --response-file',
+    }),
+    'response-file': Flags.string({
+      // Alternative to --response. Lets agents author the envelope as a
+      // plain JSON file (no shell escaping) and point the CLI at it.
+      // Same continuation semantics; mutex'd against --response at
+      // runtime so the structured envelope error is returned instead of
+      // oclif's generic stderr line.
+      description: 'Path to a JSON file containing the continuation envelope. Mutually exclusive with --response',
     }),
     session: Flags.string({
       // Continuation: resumes an existing session by id. Presence of
@@ -99,9 +135,11 @@ Bad examples:
 
     const {args, flags: rawFlags} = await this.parse(Curate)
     const flags: CurateFlags = {
+      deleteResponseFile: rawFlags['delete-response-file'],
       format: rawFlags.format === 'json' ? 'json' : rawFlags.format === 'text' ? 'text' : undefined,
       overwrite: rawFlags.overwrite,
       response: rawFlags.response,
+      responseFile: rawFlags['response-file'],
       session: rawFlags.session,
     }
     const format: 'json' | 'text' = flags.format ?? 'text'
@@ -116,6 +154,28 @@ Bad examples:
             {
               kind: 'invalid-flag-combination',
               message: '--overwrite requires --session (continuation). Remove it or pair it with --session <id>.',
+            },
+          ],
+          ok: false,
+          status: 'failed',
+        },
+        format,
+      )
+      return
+    }
+
+    // Same rejection for the continuation-only response/file flags.
+    // Without this, `brv curate "intent" --response-file foo.json` would
+    // run the kickoff and silently ignore the file — agents would think
+    // they curated when they only registered a new session.
+    const continuationFlag = pickKickoffMissingFlag(flags)
+    if (flags.session === undefined && continuationFlag) {
+      this.emitToolModeEnvelope(
+        {
+          errors: [
+            {
+              kind: 'invalid-flag-combination',
+              message: `${continuationFlag} requires --session (continuation). Remove it or pair it with --session <id>.`,
             },
           ],
           ok: false,
@@ -154,7 +214,9 @@ Bad examples:
 
     if (envelope.status === 'needs-llm-step') {
       this.log(
-        `Session ${envelope.sessionId} awaiting ${envelope.step}. Run: brv curate --session ${envelope.sessionId} --response "<your output>"`,
+        `Session ${envelope.sessionId} awaiting ${envelope.step}. Reply with the {html, meta?} JSON envelope via either:
+  brv curate --session ${envelope.sessionId} --response '{"html":"<bv-topic>...</bv-topic>","meta":{...}}'
+  brv curate --session ${envelope.sessionId} --response-file envelope.json [--delete-response-file]`,
       )
       if (envelope.prompt) {
         this.log('\nPrompt:')
@@ -179,13 +241,18 @@ Bad examples:
     sessionId: string
   }): Promise<void> {
     const {flags, format, sessionId} = props
-    if (flags.response === undefined) {
+
+    // Flag combinations specific to the new --response-file / --delete-response-file
+    // surfaces. We do these checks at runtime (rather than oclif's
+    // declarative `exclusive: ['…']`) so the failure is a structured
+    // envelope error agents can switch on, not a generic stderr line.
+    if (flags.response !== undefined && flags.responseFile !== undefined) {
       this.emitToolModeEnvelope(
         {
           errors: [
             {
-              kind: 'missing-response',
-              message: '--session requires --response. Pass the calling agent\'s LLM output via --response.',
+              kind: 'invalid-flag-combination',
+              message: '--response and --response-file are mutually exclusive; pass exactly one.',
             },
           ],
           ok: false,
@@ -196,11 +263,137 @@ Bad examples:
       return
     }
 
+    if (flags.deleteResponseFile && flags.responseFile === undefined) {
+      this.emitToolModeEnvelope(
+        {
+          errors: [
+            {
+              kind: 'invalid-flag-combination',
+              message: '--delete-response-file requires --response-file. Add --response-file <path> or drop the cleanup flag.',
+            },
+          ],
+          ok: false,
+          status: 'failed',
+        },
+        format,
+      )
+      return
+    }
+
+    if (flags.response === undefined && flags.responseFile === undefined) {
+      this.emitToolModeEnvelope(
+        {
+          errors: [
+            {
+              kind: 'missing-response',
+              message: '--session requires --response or --response-file. Pass the calling agent\'s envelope via one of them.',
+            },
+          ],
+          ok: false,
+          status: 'failed',
+        },
+        format,
+      )
+      return
+    }
+
+    // Resolve the response payload. When --response-file is set, read
+    // the file via the regular-file-guarded helper; otherwise use the
+    // inline --response string. File-IO errors surface as structured
+    // envelope errors and abort the continuation before any daemon work.
+    let response: string
+    if (flags.responseFile === undefined) {
+      // Narrowed by the combination checks above — when responseFile is
+      // undefined we already returned early unless response was set.
+      response = flags.response ?? ''
+    } else {
+      try {
+        response = await loadCurateResponseFile(flags.responseFile)
+      } catch (error) {
+        if (error instanceof InvalidResponseFileError) {
+          this.emitToolModeEnvelope(
+            {
+              errors: [{kind: error.kind, message: error.message}],
+              ok: false,
+              status: 'failed',
+            },
+            format,
+          )
+          return
+        }
+
+        throw error
+      }
+    }
+
+    // Pre-dispatch validation. We do these checks LOCALLY (before any
+    // daemon connect) so a malformed envelope or an unknown session
+    // never wastes daemon I/O AND never gets close to deleting a
+    // --response-file. continueSession re-parses and re-reads the
+    // session itself; the duplicate work is microseconds and keeps that
+    // function authoritative.
+
+    // 1. Envelope shape. parseCurateResponse throws an Error with
+    //    kind === 'invalid-response-format' on JSON failure / schema
+    //    failure.
+    const projectRoot = resolveProjectRoot()
+    try {
+      parseCurateResponse(response)
+    } catch (error) {
+      if (error instanceof Error && (error as Error & {kind?: string}).kind === 'invalid-response-format') {
+        this.emitToolModeEnvelope(
+          {
+            errors: [{kind: 'invalid-response-format', message: error.message}],
+            ok: false,
+            sessionId,
+            status: 'failed',
+          },
+          format,
+        )
+        return
+      }
+
+      throw error
+    }
+
+    // 2. Session existence (UUID format + on-disk state). If the
+    //    session is unknown locally, we emit the same envelope
+    //    continueSession would, with NO file mutation.
+    const lookup = await peekCurateSession(projectRoot, sessionId)
+    if (lookup.kind !== 'ok') {
+      this.emitToolModeEnvelope(buildUnknownSessionEnvelope(sessionId, lookup.kind), format)
+      return
+    }
+
+    // Local validation passed. Honor --delete-response-file BEFORE
+    // dispatching — the file's purpose was to ferry input into brv,
+    // and we've now extracted everything we need from it. Unlink
+    // failure aborts dispatch so we never claim a curate succeeded
+    // when the requested cleanup did not.
+    if (flags.deleteResponseFile && flags.responseFile !== undefined) {
+      try {
+        await deleteCurateResponseFile(flags.responseFile)
+      } catch (error) {
+        if (error instanceof InvalidResponseFileError) {
+          this.emitToolModeEnvelope(
+            {
+              errors: [{kind: error.kind, message: error.message}],
+              ok: false,
+              status: 'failed',
+            },
+            format,
+          )
+          return
+        }
+
+        throw error
+      }
+    }
+
     // Continuation routes the write through the daemon (curate-tool-mode
     // task) so the curate appears in the WebUI Tasks panel and cancel
     // surfaces. Kickoff stays in-process — no daemon round-trip needed
     // to emit the generate prompt.
-    const {response} = flags
     const confirmOverwrite = flags.overwrite ?? false
     try {
       await withDaemonRetry(async (client) => {
@@ -208,7 +401,7 @@ Bad examples:
           client,
           confirmOverwrite,
           format,
-          projectRoot: resolveProjectRoot(),
+          projectRoot,
           response,
           sessionId,
         })
@@ -252,4 +445,20 @@ Bad examples:
     const envelope = await kickoffSession({content, projectRoot: resolveProjectRoot()})
     this.emitToolModeEnvelope(envelope, format)
   }
+}
+
+/**
+ * Return the first continuation-only flag (in priority order) that the
+ * caller used without `--session`. Returns `undefined` when none are
+ * set. The result is the user-facing flag name (with the `--` prefix)
+ * so we can drop it straight into the error message.
+ *
+ * `--overwrite` has its own pre-existing check above and is excluded
+ * here to avoid double-emission.
+ */
+function pickKickoffMissingFlag(flags: CurateFlags): string | undefined {
+  if (flags.response !== undefined) return '--response'
+  if (flags.responseFile !== undefined) return '--response-file'
+  if (flags.deleteResponseFile) return '--delete-response-file'
+  return undefined
 }

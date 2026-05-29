@@ -16,16 +16,25 @@ Tool mode is the only path for `brv curate` — no provider configuration, no en
 
 ### Continuation — `--session` carries the prior call's id
 
+The continuation payload is always a JSON envelope of the form `{"html": "...", "meta": {...}}`. Two equivalent ways to deliver it:
+
 ```bash
-brv curate --session <sessionId> --response "<calling agent's output>" --format json
+# Inline envelope on --response
+brv curate --session <sessionId> --response '{"html":"<bv-topic>...</bv-topic>","meta":{...}}' --format json
+
+# Envelope from a JSON file via --response-file (mutually exclusive with --response)
+brv curate --session <sessionId> --response-file envelope.json --format json
+
+# Same, with opt-in cleanup once local validation has accepted the envelope
+brv curate --session <sessionId> --response-file envelope.json --delete-response-file --format json
 ```
 
-Presence of `--session` resumes an in-flight session created by a prior kickoff.
+Presence of `--session` resumes an in-flight session created by a prior kickoff. `--response-file -` (stdin) is not supported in v1.
 
 ### Overwrite intent — `--overwrite` on continuation
 
 ```bash
-brv curate --session <sessionId> --response "<calling agent's output>" --overwrite --format json
+brv curate --session <sessionId> --response-file envelope.json --overwrite --format json
 ```
 
 Default behavior: the writer refuses to clobber an existing topic at the resolved path and returns a `path-exists` correction step carrying the prior file's content. Pass `--overwrite` only when the calling agent has consciously decided to replace prior content. The flag is consumed on the continuation it appears on; subsequent continuations in the same session must repeat it if they still want to overwrite.
@@ -67,7 +76,7 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
 
 | `status` | Meaning | Next action for calling agent |
 |---|---|---|
-| `needs-llm-step` | Byterover wants an LLM completion. `prompt` + `step` describe what. | Run the calling agent's own LLM on `prompt`, then `brv curate --session <sessionId> --response "<output>"`. |
+| `needs-llm-step` | Byterover wants an LLM completion. `prompt` + `step` describe what. | Run the calling agent's own LLM on `prompt`, then `brv curate --session <sessionId> --response '{"html":"...","meta":{...}}'` or `--response-file envelope.json`. |
 | `done` | Curate complete. `filePath` is the location of the written topic. | Report success to user. Session is cleaned up. |
 | `failed` | Terminal error. `errors[]` explains why. | Report failure to user; abandon session. |
 
@@ -83,8 +92,12 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
 | `kind` | Lifecycle | Terminal? | Notes |
 |---|---|---|---|
 | `missing-content` | Kickoff | **terminal** | Kickoff invoked without a context argument; no session created |
-| `missing-response` | Continuation | **terminal** | `--session` invoked without `--response`; session unaffected |
-| `invalid-flag-combination` | Continuation | **terminal** | Emitted before any session lookup when a flag is used outside its supported call shape. Today the only producer is `--overwrite` passed without `--session` (legacy curate path does not honour `--overwrite`). |
+| `missing-response` | Continuation | **terminal** | `--session` invoked without `--response` or `--response-file`; session unaffected |
+| `invalid-flag-combination` | Continuation | **terminal** | Emitted before any session lookup when a flag is used outside its supported call shape. Producers: `--overwrite`, `--response`, `--response-file`, or `--delete-response-file` without `--session`; `--response` and `--response-file` together; `--delete-response-file` without `--response-file`. |
+| `invalid-response-format` | Continuation | **terminal** | `--response` / `--response-file` body did not parse as a `{html, meta?}` envelope. Detected locally before any daemon I/O; the file (if any) is preserved so the agent can fix and retry. |
+| `response-file-not-regular` | Continuation | **terminal** | `--response-file` target is a directory, symlink, device, fifo, or socket. brv refuses to read or unlink non-regular files. |
+| `response-file-read-error` | Continuation | **terminal** | `lstat` or `readFile` on `--response-file` failed (e.g. ENOENT, EACCES). |
+| `response-file-delete-error` | Continuation | **terminal** | `--delete-response-file` was honored locally but the `unlink` itself failed; the curate is aborted so we never claim success when cleanup did not happen. |
 | `unknown-session` | Continuation | **terminal** | Session id doesn't exist, was already completed, or fails uuid validation |
 | `empty-response` | Continuation | **transient** (session kept live) | Continuation received an empty `--response`; caller retries with the same `sessionId` |
 | `retry-cap-exceeded` | Continuation | **terminal** | `MAX_ATTEMPTS = 4` (1 generate + 3 corrections) reached without valid HTML; session cleared. Accompanied by the validation errors that pushed the session over the cap. |
@@ -140,7 +153,9 @@ Response (placeholder):
 ### 3. Continuation
 
 ```bash
-brv curate --session 8c3f9e2a-... --response "<bv-topic ...>...</bv-topic>" --format json
+brv curate --session 8c3f9e2a-... --response '{"html":"<bv-topic ...>...</bv-topic>","meta":{"type":"ADD","impact":"high","reason":"Locks JWT alg.","summary":"JWT: RS256."}}' --format json
+# Or with the envelope on disk:
+brv curate --session 8c3f9e2a-... --response-file envelope.json [--delete-response-file] --format json
 ```
 
 Response on a valid HTML topic:
