@@ -245,8 +245,11 @@ const CurateResponseEnvelopeSchema = z.object({
  * is not a well-formed envelope. Carries `kind: 'invalid-response-format'`
  * so the orchestrator can map it to the envelope's structured `errors[]`
  * shape without coupling parsing to envelope construction.
+ *
+ * Exported so the CLI command layer can narrow with `instanceof` instead
+ * of duck-typing on `error.kind`.
  */
-class InvalidResponseFormatError extends Error {
+export class InvalidResponseFormatError extends Error {
   readonly kind = 'invalid-response-format'
 }
 
@@ -436,19 +439,6 @@ export async function peekCurateSession(
   if (!SESSION_ID_RE.test(sessionId)) return {kind: 'invalid-format'}
   const state = await readSessionState(projectRoot, sessionId)
   return state ? {kind: 'ok'} : {kind: 'not-found'}
-}
-
-/**
- * Build the `unknown-session` envelope used by both `continueSession`
- * and the CLI command's pre-flight session validation. Exported so the
- * command can emit a byte-identical envelope when it detects an unknown
- * session locally (before any daemon I/O).
- */
-export function buildUnknownSessionEnvelope(
-  sessionId: string,
-  reason: 'invalid-format' | 'not-found',
-): CurateSessionEnvelope {
-  return unknownSessionEnvelope(sessionId, reason)
 }
 
 /**
@@ -646,7 +636,17 @@ async function dispatchCurateHtmlDirect(args: {
   return parsed
 }
 
-function unknownSessionEnvelope(sessionId: string, reason: 'invalid-format' | 'not-found'): CurateSessionEnvelope {
+/**
+ * Build the `unknown-session` failed envelope. Used both by
+ * `continueSession`'s own UUID / state-on-disk guards AND by the CLI
+ * command layer when it pre-flights the session before any destructive
+ * side effect (e.g. unlinking a `--response-file`). Exported so callers
+ * outside this module can emit a byte-identical envelope.
+ */
+export function unknownSessionEnvelope(
+  sessionId: string,
+  reason: 'invalid-format' | 'not-found',
+): CurateSessionEnvelope {
   const message =
     reason === 'invalid-format'
       ? `Invalid session id format: ${sessionId}. Expected a uuid returned by a prior kickoff.`

@@ -1,15 +1,18 @@
 import {Args, Command, Flags} from '@oclif/core'
 
+import type {CurateSessionEnvelope} from '../../lib/curate-session.js'
+
 import {
-  buildUnknownSessionEnvelope,
   continueSession,
   deleteCurateResponseFile,
   InvalidResponseFileError,
+  InvalidResponseFormatError,
   kickoffSession,
   loadCurateResponseFile,
   parseCurateResponse,
   peekCurateSession,
   resolveProjectRoot,
+  unknownSessionEnvelope,
 } from '../../lib/curate-session.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
@@ -328,22 +331,37 @@ Bad examples:
 
     // Pre-dispatch validation. We do these checks LOCALLY (before any
     // daemon connect) so a malformed envelope or an unknown session
-    // never wastes daemon I/O AND never gets close to deleting a
-    // --response-file. continueSession re-parses and re-reads the
-    // session itself; the duplicate work is microseconds and keeps that
-    // function authoritative.
+    // never wastes daemon I/O. continueSession re-parses and re-reads
+    // the session itself; the duplicate work is microseconds and keeps
+    // that function authoritative.
 
-    // 1. Envelope shape. parseCurateResponse throws an Error with
-    //    kind === 'invalid-response-format' on JSON failure / schema
-    //    failure.
+    // 1. Empty / whitespace-only payload. Match continueSession's
+    //    `empty-response` kind (transient — session stays live so the
+    //    caller can retry with the same sessionId) instead of letting
+    //    JSON.parse coerce this into a terminal `invalid-response-format`.
+    if (response.trim().length === 0) {
+      this.emitToolModeEnvelope(
+        {
+          errors: [{kind: 'empty-response', message: 'Continuation --response must be non-empty.'}],
+          ok: false,
+          sessionId,
+          status: 'failed',
+        },
+        format,
+      )
+      return
+    }
+
+    // 2. Envelope shape. parseCurateResponse throws InvalidResponseFormatError
+    //    on JSON failure / schema failure.
     const projectRoot = resolveProjectRoot()
     try {
       parseCurateResponse(response)
     } catch (error) {
-      if (error instanceof Error && (error as Error & {kind?: string}).kind === 'invalid-response-format') {
+      if (error instanceof InvalidResponseFormatError) {
         this.emitToolModeEnvelope(
           {
-            errors: [{kind: 'invalid-response-format', message: error.message}],
+            errors: [{kind: error.kind, message: error.message}],
             ok: false,
             sessionId,
             status: 'failed',
@@ -356,48 +374,26 @@ Bad examples:
       throw error
     }
 
-    // 2. Session existence (UUID format + on-disk state). If the
+    // 3. Session existence (UUID format + on-disk state). If the
     //    session is unknown locally, we emit the same envelope
     //    continueSession would, with NO file mutation.
     const lookup = await peekCurateSession(projectRoot, sessionId)
     if (lookup.kind !== 'ok') {
-      this.emitToolModeEnvelope(buildUnknownSessionEnvelope(sessionId, lookup.kind), format)
+      this.emitToolModeEnvelope(unknownSessionEnvelope(sessionId, lookup.kind), format)
       return
     }
 
-    // Local validation passed. Honor --delete-response-file BEFORE
-    // dispatching — the file's purpose was to ferry input into brv,
-    // and we've now extracted everything we need from it. Unlink
-    // failure aborts dispatch so we never claim a curate succeeded
-    // when the requested cleanup did not.
-    if (flags.deleteResponseFile && flags.responseFile !== undefined) {
-      try {
-        await deleteCurateResponseFile(flags.responseFile)
-      } catch (error) {
-        if (error instanceof InvalidResponseFileError) {
-          this.emitToolModeEnvelope(
-            {
-              errors: [{kind: error.kind, message: error.message}],
-              ok: false,
-              status: 'failed',
-            },
-            format,
-          )
-          return
-        }
-
-        throw error
-      }
-    }
-
-    // Continuation routes the write through the daemon (curate-tool-mode
-    // task) so the curate appears in the WebUI Tasks panel and cancel
-    // surfaces. Kickoff stays in-process — no daemon round-trip needed
-    // to emit the generate prompt.
+    // Local validation passed. Dispatch to the daemon — the write,
+    // log, sidecar, and index regeneration all happen there. We
+    // surface throws from withDaemonRetry as a `daemon-error` envelope;
+    // crucially, the `--response-file` is NOT unlinked on this path so
+    // the agent retains the source it already paid an LLM call to
+    // produce.
     const confirmOverwrite = flags.overwrite ?? false
+    let dispatchEnvelope: CurateSessionEnvelope | undefined
     try {
       await withDaemonRetry(async (client) => {
-        const envelope = await continueSession({
+        dispatchEnvelope = await continueSession({
           client,
           confirmOverwrite,
           format,
@@ -405,7 +401,6 @@ Bad examples:
           response,
           sessionId,
         })
-        this.emitToolModeEnvelope(envelope, format)
       }, this.getDaemonClientOptions())
     } catch (error) {
       this.emitToolModeEnvelope(
@@ -416,7 +411,49 @@ Bad examples:
         },
         format,
       )
+      return
     }
+
+    if (dispatchEnvelope === undefined) {
+      this.emitToolModeEnvelope(
+        {
+          errors: [{kind: 'daemon-error', message: 'Daemon dispatch returned no envelope.'}],
+          ok: false,
+          status: 'failed',
+        },
+        format,
+      )
+      return
+    }
+
+    // Non-throw dispatch. Honor --delete-response-file: the daemon
+    // received the bytes (whether the curate landed `done`, was rejected
+    // with `correct-html`, or otherwise), so the file has served its
+    // purpose. Skip-on-throw above is what protects the agent from
+    // losing its envelope to a transport error. On unlink failure we
+    // still surface the dispatch result but append the cleanup failure
+    // as a warning — the curate happened; the caller asked for cleanup
+    // and we tell them honestly whether that happened too.
+    if (flags.deleteResponseFile && flags.responseFile !== undefined) {
+      try {
+        await deleteCurateResponseFile(flags.responseFile)
+      } catch (error) {
+        if (error instanceof InvalidResponseFileError) {
+          this.emitToolModeEnvelope(
+            {
+              ...dispatchEnvelope,
+              warnings: [...(dispatchEnvelope.warnings ?? []), error.message],
+            },
+            format,
+          )
+          return
+        }
+
+        throw error
+      }
+    }
+
+    this.emitToolModeEnvelope(dispatchEnvelope, format)
   }
 
   /**

@@ -28,17 +28,18 @@ import type {HtmlWriteError} from '../../../../src/server/infra/render/writer/ht
 import type {CurateMeta} from '../../../../src/shared/curate-meta.js'
 
 import {
-  buildUnknownSessionEnvelope,
   continueSession,
   CURATE_SESSION_PREFIX,
   CURATE_SESSIONS_DIR,
   deleteCurateResponseFile,
   InvalidResponseFileError,
+  InvalidResponseFormatError,
   kickoffSession,
   loadCurateResponseFile,
   parseCurateResponse,
   peekCurateSession,
   resolveProjectRoot,
+  unknownSessionEnvelope,
 } from '../../../../src/oclif/lib/curate-session.js'
 import {BRV_DIR} from '../../../../src/server/constants.js'
 import {decodeCurateHtmlContent} from '../../../../src/shared/transport/curate-html-content.js'
@@ -1039,9 +1040,9 @@ describe('curate-session', () => {
     })
   })
 
-  describe('buildUnknownSessionEnvelope', () => {
+  describe('unknownSessionEnvelope', () => {
     it('produces the standard failed envelope with kind=unknown-session for invalid-format', () => {
-      const env = buildUnknownSessionEnvelope('not-a-uuid', 'invalid-format')
+      const env = unknownSessionEnvelope('not-a-uuid', 'invalid-format')
       expect(env.ok).to.equal(false)
       expect(env.status).to.equal('failed')
       expect(env.errors?.[0]?.kind).to.equal('unknown-session')
@@ -1049,11 +1050,25 @@ describe('curate-session', () => {
     })
 
     it('produces the standard failed envelope with kind=unknown-session for not-found', () => {
-      const env = buildUnknownSessionEnvelope('00000000-0000-0000-0000-000000000000', 'not-found')
+      const env = unknownSessionEnvelope('00000000-0000-0000-0000-000000000000', 'not-found')
       expect(env.ok).to.equal(false)
       expect(env.status).to.equal('failed')
       expect(env.errors?.[0]?.kind).to.equal('unknown-session')
       expect(env.errors?.[0]?.message).to.match(/No active session/i)
+    })
+  })
+
+  describe('parseCurateResponse — exported error class', () => {
+    it('throws InvalidResponseFormatError so callers can narrow with `instanceof`', () => {
+      let caught: unknown
+      try {
+        parseCurateResponse('{not valid json')
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).to.be.instanceOf(InvalidResponseFormatError)
+      expect((caught as InvalidResponseFormatError).kind).to.equal('invalid-response-format')
     })
   })
 })
