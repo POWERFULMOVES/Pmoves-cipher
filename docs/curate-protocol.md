@@ -25,11 +25,13 @@ brv curate --session <sessionId> --response '{"html":"<bv-topic>...</bv-topic>",
 # Envelope from a JSON file via --response-file (mutually exclusive with --response)
 brv curate --session <sessionId> --response-file envelope.json --format json
 
-# Same, with opt-in cleanup once local validation has accepted the envelope
+# Same, with opt-in cleanup once the daemon dispatch returns
 brv curate --session <sessionId> --response-file envelope.json --delete-response-file --format json
 ```
 
 Presence of `--session` resumes an in-flight session created by a prior kickoff. `--response-file -` (stdin) is not supported in v1.
+
+**`--delete-response-file` lifecycle.** The file is unlinked **after** the daemon dispatch returns, not before. A daemon-error throw (transport timeout, daemon down) skips the unlink entirely so the agent retains the envelope for retry. A non-throw return (`done`, `correct-html`, or any other status) honors the unlink. One consequence: on a `correct-html` continuation the source file is gone but the session is still live — the calling agent must re-author a fresh envelope and write a new file before the next continuation. The inline `--response` flow has no equivalent re-authoring tax.
 
 ### Overwrite intent — `--overwrite` on continuation
 
@@ -66,7 +68,8 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
         "message": "<human-readable>"
       }
     ],
-    "filePath": "<relative-path>"  // relative to .brv/context-tree/; present when status = done
+    "filePath": "<relative-path>",  // relative to .brv/context-tree/; present when status = done
+    "warnings": [ "<advisory>" ]    // optional, only on done envelopes; non-fatal post-write notes from the writer
   },
   "timestamp": "<iso>"
 }
@@ -97,7 +100,7 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
 | `invalid-response-format` | Continuation | **terminal** | `--response` / `--response-file` body did not parse as a `{html, meta?}` envelope. Detected locally before any daemon I/O; the file (if any) is preserved so the agent can fix and retry. |
 | `response-file-not-regular` | Continuation | **terminal** | `--response-file` target is a directory, symlink, device, fifo, or socket. brv refuses to read or unlink non-regular files. |
 | `response-file-read-error` | Continuation | **terminal** | `lstat` or `readFile` on `--response-file` failed (e.g. ENOENT, EACCES). |
-| `response-file-delete-error` | Continuation | **terminal** | `--delete-response-file` was honored locally but the `unlink` itself failed; the curate is aborted so we never claim success when cleanup did not happen. |
+| `response-file-delete-error` | Continuation | **non-terminal companion** | `--delete-response-file` was requested but `unlink` failed AFTER the daemon dispatch returned. The CLI emits the daemon's envelope verbatim (preserving its `status`, `ok`, `filePath`, etc.) and APPENDS this entry to `errors[]` so consumers can detect cleanup failure programmatically — `{ok: true, status: 'done', errors: [{kind: 'response-file-delete-error', …}]}` is the success-with-cleanup-hiccup shape. On a `status: 'failed'` dispatch, this entry joins the existing validation errors. |
 | `unknown-session` | Continuation | **terminal** | Session id doesn't exist, was already completed, or fails uuid validation |
 | `empty-response` | Continuation | **transient** (session kept live) | Continuation received an empty `--response`; caller retries with the same `sessionId` |
 | `retry-cap-exceeded` | Continuation | **terminal** | `MAX_ATTEMPTS = 4` (1 generate + 3 corrections) reached without valid HTML; session cleared. Accompanied by the validation errors that pushed the session over the cap. |

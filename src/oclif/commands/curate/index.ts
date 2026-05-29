@@ -430,10 +430,17 @@ Bad examples:
     // received the bytes (whether the curate landed `done`, was rejected
     // with `correct-html`, or otherwise), so the file has served its
     // purpose. Skip-on-throw above is what protects the agent from
-    // losing its envelope to a transport error. On unlink failure we
-    // still surface the dispatch result but append the cleanup failure
-    // as a warning — the curate happened; the caller asked for cleanup
-    // and we tell them honestly whether that happened too.
+    // losing its envelope to a transport error.
+    //
+    // On unlink failure we surface the dispatch result with the cleanup
+    // failure APPENDED TO `errors[]` — not warnings. The reason: a
+    // structured `kind: 'response-file-delete-error'` lets consumers
+    // switch on the field programmatically and remains discoverable on
+    // both `status: done` (curate landed, cleanup hiccupped) and
+    // `status: failed` (validation already populated `errors[]`; we
+    // just append). The `ok`/`status` fields stay as the daemon set
+    // them, so "curate succeeded but cleanup didn't" is a clean
+    // (`ok: true`, `status: 'done'`, non-empty `errors[]`) shape.
     if (flags.deleteResponseFile && flags.responseFile !== undefined) {
       try {
         await deleteCurateResponseFile(flags.responseFile)
@@ -442,7 +449,10 @@ Bad examples:
           this.emitToolModeEnvelope(
             {
               ...dispatchEnvelope,
-              warnings: [...(dispatchEnvelope.warnings ?? []), error.message],
+              errors: [
+                ...(dispatchEnvelope.errors ?? []),
+                {kind: error.kind, message: error.message},
+              ],
             },
             format,
           )
