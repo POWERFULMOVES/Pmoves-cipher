@@ -106,8 +106,70 @@ Bad examples:
     }),
   }
 
+  /** Unlink the response envelope file. Wrapped for test override. */
+  protected async deleteResponseFile(filePath: string): Promise<void> {
+    return deleteCurateResponseFile(filePath)
+  }
+
+  /**
+   * Dispatch the validated continuation envelope to the daemon. Wraps
+   * `withDaemonRetry` + `continueSession` so a subclass can short-circuit
+   * the daemon round-trip in tests. Throws on transport / retry-cap
+   * failure so the caller can map the error to a `daemon-error` envelope
+   * AND skip the post-success unlink — that ordering is the load-bearing
+   * invariant we want to test against future refactors.
+   */
+  protected async dispatchContinuation(args: {
+    confirmOverwrite: boolean
+    format: 'json' | 'text'
+    projectRoot: string
+    response: string
+    sessionId: string
+  }): Promise<CurateSessionEnvelope> {
+    const {confirmOverwrite, format, projectRoot, response, sessionId} = args
+    let envelope: CurateSessionEnvelope | undefined
+    await withDaemonRetry(async (client) => {
+      envelope = await continueSession({
+        client,
+        confirmOverwrite,
+        format,
+        projectRoot,
+        response,
+        sessionId,
+      })
+    }, this.getDaemonClientOptions())
+
+    if (envelope === undefined) {
+      throw new Error('Daemon dispatch returned no envelope.')
+    }
+
+    return envelope
+  }
+
   protected getDaemonClientOptions(): DaemonClientOptions {
     return {}
+  }
+
+  /** Load the response envelope from disk. Wrapped for test override. */
+  protected async loadResponseFile(filePath: string): Promise<string> {
+    return loadCurateResponseFile(filePath)
+  }
+
+  /** Peek at on-disk session state without dispatching. Wrapped for test override. */
+  protected async peekSession(
+    projectRoot: string,
+    sessionId: string,
+  ): Promise<{kind: 'invalid-format'} | {kind: 'not-found'} | {kind: 'ok'}> {
+    return peekCurateSession(projectRoot, sessionId)
+  }
+
+  /**
+   * Resolve the absolute project root used for session-state lookups
+   * and the daemon dispatch payload. Wrapped so test subclasses can
+   * point at a tmpdir without spinning up the real workspace resolver.
+   */
+  protected resolveProjectRoot(): string {
+    return resolveProjectRoot()
   }
 
   public async run(): Promise<void> {
@@ -116,7 +178,11 @@ Bad examples:
     // provider on this command. (The env-var `BRV_CURATE_TOOL_MODE`
     // scaffolding from M1 is removed in M3 — presence/absence is a
     // no-op now.)
-    const rawArgv = process.argv.slice(2)
+    // Use `this.argv` (set by oclif when the Command instance is
+    // constructed) rather than `process.argv.slice(2)` so testable
+    // subclasses can scope this check to their own argv without
+    // colliding with the host process's argv (e.g. mocha's own flags).
+    const rawArgv = this.argv
     const removedFlagMessage = findRemovedFlagMessage(rawArgv, CURATE_REMOVED_FLAGS)
     if (removedFlagMessage) {
       // Surface as a JSON envelope when the caller asked for JSON — agents
@@ -321,7 +387,7 @@ Bad examples:
       response = flags.response ?? ''
     } else {
       try {
-        response = await loadCurateResponseFile(flags.responseFile)
+        response = await this.loadResponseFile(flags.responseFile)
       } catch (error) {
         if (error instanceof InvalidResponseFileError) {
           this.emitToolModeEnvelope(
@@ -364,7 +430,7 @@ Bad examples:
 
     // 2. Envelope shape. parseCurateResponse throws InvalidResponseFormatError
     //    on JSON failure / schema failure.
-    const projectRoot = resolveProjectRoot()
+    const projectRoot = this.resolveProjectRoot()
     try {
       parseCurateResponse(response)
     } catch (error) {
@@ -387,7 +453,7 @@ Bad examples:
     // 3. Session existence (UUID format + on-disk state). If the
     //    session is unknown locally, we emit the same envelope
     //    continueSession would, with NO file mutation.
-    const lookup = await peekCurateSession(projectRoot, sessionId)
+    const lookup = await this.peekSession(projectRoot, sessionId)
     if (lookup.kind !== 'ok') {
       this.emitToolModeEnvelope(unknownSessionEnvelope(sessionId, lookup.kind), format)
       return
@@ -395,39 +461,24 @@ Bad examples:
 
     // Local validation passed. Dispatch to the daemon — the write,
     // log, sidecar, and index regeneration all happen there. We
-    // surface throws from withDaemonRetry as a `daemon-error` envelope;
-    // crucially, the `--response-file` is NOT unlinked on this path so
-    // the agent retains the source it already paid an LLM call to
-    // produce.
+    // surface throws from `dispatchContinuation` as a `daemon-error`
+    // envelope; crucially, the `--response-file` is NOT unlinked on
+    // this path so the agent retains the source it already paid an
+    // LLM call to produce.
     const confirmOverwrite = flags.overwrite ?? false
-    let dispatchEnvelope: CurateSessionEnvelope | undefined
+    let dispatchEnvelope: CurateSessionEnvelope
     try {
-      await withDaemonRetry(async (client) => {
-        dispatchEnvelope = await continueSession({
-          client,
-          confirmOverwrite,
-          format,
-          projectRoot,
-          response,
-          sessionId,
-        })
-      }, this.getDaemonClientOptions())
+      dispatchEnvelope = await this.dispatchContinuation({
+        confirmOverwrite,
+        format,
+        projectRoot,
+        response,
+        sessionId,
+      })
     } catch (error) {
       this.emitToolModeEnvelope(
         {
           errors: [{kind: 'daemon-error', message: formatConnectionError(error)}],
-          ok: false,
-          status: 'failed',
-        },
-        format,
-      )
-      return
-    }
-
-    if (dispatchEnvelope === undefined) {
-      this.emitToolModeEnvelope(
-        {
-          errors: [{kind: 'daemon-error', message: 'Daemon dispatch returned no envelope.'}],
           ok: false,
           status: 'failed',
         },
@@ -453,7 +504,7 @@ Bad examples:
     // (`ok: true`, `status: 'done'`, non-empty `errors[]`) shape.
     if (flags.deleteResponseFile && flags.responseFile !== undefined) {
       try {
-        await deleteCurateResponseFile(flags.responseFile)
+        await this.deleteResponseFile(flags.responseFile)
       } catch (error) {
         if (error instanceof InvalidResponseFileError) {
           this.emitToolModeEnvelope(
