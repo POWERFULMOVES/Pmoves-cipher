@@ -60,7 +60,7 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
     "step": "generate-html" | "correct-html",
     "prompt": "<free-text>",      // free-text instruction for the calling agent's LLM
     "schema": { ... },            // optional per-step schema slice
-    "errors": [                   // present on correct-html and on failed
+    "errors": [                   // present on correct-html, on failed, AND on done envelopes that carry a non-fatal companion error (today only --delete-response-file cleanup failure — see response-file-delete-error row below)
       {
         "kind": "<machine-readable>",
         "tag": "<bv-element>?",
@@ -80,7 +80,7 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
 | `status` | Meaning | Next action for calling agent |
 |---|---|---|
 | `needs-llm-step` | Byterover wants an LLM completion. `prompt` + `step` describe what. | Run the calling agent's own LLM on `prompt`, then `brv curate --session <sessionId> --response '{"html":"...","meta":{...}}'` or `--response-file envelope.json`. |
-| `done` | Curate complete. `filePath` is the location of the written topic. | Report success to user. Session is cleaned up. |
+| `done` | Curate complete. `filePath` is the location of the written topic. May also carry a non-empty `errors[]` for non-fatal companion failures — today only `response-file-delete-error` from `--delete-response-file` cleanup. Treat as success; surface the companion error to the user but don't abandon the result. | Report success to user. Session is cleaned up. |
 | `failed` | Terminal error. `errors[]` explains why. | Report failure to user; abandon session. |
 
 ### `step` values (when `status === 'needs-llm-step'`)

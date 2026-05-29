@@ -230,6 +230,16 @@ Bad examples:
       for (const warning of envelope.warnings ?? []) {
         this.log(`  ⚠ ${warning}`)
       }
+
+      // A `done` envelope may also carry non-fatal companion errors —
+      // today, the only producer is `--delete-response-file` cleanup
+      // failure (the curate landed, but the unlink couldn't run). The
+      // JSON surface puts these in `errors[]` so consumers can switch
+      // on `kind` programmatically; text mode needs to surface them
+      // too or `--format text` users miss the signal entirely.
+      for (const err of envelope.errors ?? []) {
+        this.log(`  ⚠ ${err.kind}: ${err.message}`)
+      }
     } else {
       this.log('✗ Curate failed')
       for (const err of envelope.errors ?? []) {
