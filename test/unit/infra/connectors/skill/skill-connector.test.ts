@@ -158,6 +158,9 @@ describe('SkillConnector', () => {
       expect(content).to.include('brv curate')
       expect(content).to.include('brv curate view')
       expect(content).to.include('brv webui')
+      expect(content).to.include('printed Web UI URL')
+      expect(content).to.include('brv webui --port <port>')
+      expect(content).not.to.include('http://localhost:7700')
       expect(content).to.include('## When To Use')
       expect(content).to.include('## Quick Reference')
       expect(content).not.to.include('<<<<<<<')
@@ -182,6 +185,25 @@ describe('SkillConnector', () => {
       expect(swarmContent).to.include('parallel')
     })
 
+    it('should avoid fixed Web UI localhost ports in installed skill docs', async () => {
+      const agent = 'Claude Code' as const
+      const {projectPath} = SKILL_CONNECTOR_CONFIGS[agent]
+      await skillConnector.install(agent)
+
+      const skillDir = path.join(testDir, projectPath, BRV_SKILL_NAME)
+      const contents = await Promise.all(
+        SKILL_FILE_NAMES.map((fileName) => readFile(path.join(skillDir, fileName), 'utf8')),
+      )
+
+      for (const content of contents) {
+        expect(content).not.to.include('http://localhost:7700')
+      }
+
+      const onboardingContent = await readFile(path.join(skillDir, 'onboarding.md'), 'utf8')
+      expect(onboardingContent).to.include('printed Web UI URL')
+      expect(onboardingContent).to.include('brv webui --port <port>')
+    })
+
     it('should create curate.md documenting the session protocol and bv-topic contract', async () => {
       const agent = 'Claude Code' as const
       const {projectPath} = SKILL_CONNECTOR_CONFIGS[agent]
@@ -196,8 +218,10 @@ describe('SkillConnector', () => {
       expect(curateContent).to.include('<bv-topic')
       expect(curateContent).to.include('bv-rule')
       expect(curateContent).to.include('--overwrite')
-      expect(curateContent).to.include('localhost:7700')
       expect(curateContent).to.include('## Example Session Responses')
+      expect(curateContent).to.include('printed Web UI URL')
+      expect(curateContent).to.include('brv webui --port <port>')
+      expect(curateContent).not.to.include('http://localhost:7700')
     })
 
     it('should create sibling guides with When-To and Common Mistakes sections', async () => {

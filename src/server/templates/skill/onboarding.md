@@ -100,7 +100,7 @@ Saved:
 <pain-naming + commitment paragraph — 2 short sentences>
 
 Lives at .brv/context-tree/ — local-only.
-See it in your browser: http://localhost:7700
+See it in your browser: <printed Web UI URL from brv webui>
 Also version-controlled, cloud-syncable, and shareable across agents — more at the end.
 ```
 
@@ -127,7 +127,7 @@ model, your reliability stance, and the context you just shared. You
 stop re-explaining. You start where you left off.
 
 Lives at .brv/context-tree/ — local-only.
-See it in your browser: http://localhost:7700
+See it in your browser: <printed Web UI URL from brv webui>
 Also version-controlled, cloud-syncable, and shareable across agents — more at the end.
 ```
 
@@ -135,7 +135,7 @@ Also version-controlled, cloud-syncable, and shareable across agents — more at
 
 The browser URL is the **verifiable** trust proof — the user can click it in 2 seconds and see their memory in a real local dashboard. Stronger than any worded assurance.
 
-Do NOT tell the user to "run `brv webui`" — the daemon auto-starts the web server on the persisted port (default 7700). The URL works as soon as the daemon is alive, which it already is.
+Run `brv webui` to get the current dashboard URL, then give the user the printed Web UI URL. Do NOT hardcode a localhost port; the daemon may be using a remembered custom port. If `brv webui` reports a port conflict, run `brv webui --port <port>` and use that newly printed URL.
 
 Do NOT ask "is this right?" — that turns the artifact into a form. Users who want to correct it will; users who don't, won't be slowed down.
 

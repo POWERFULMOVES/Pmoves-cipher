@@ -28,7 +28,8 @@ brv curate "Authentication middleware validates JWTs in src/middleware/auth.ts a
 brv curate "Retry helper in src/retry.ts treats HTTP 429 as retryable with exponential backoff."
 brv curate view --detail
 brv review pending --format json
-# After a successful curate, view the topic in the dashboard: http://localhost:7700 (Contexts page)
+# After a successful curate, run brv webui and share the printed Web UI URL (Contexts page)
+# If the port is busy, run brv webui --port <port> and share that printed URL instead
 ```
 
 ## Session Protocol
@@ -45,7 +46,7 @@ Curate runs as request -> response -> request:
    brv curate --session <data.sessionId> --response "<your bv-topic html>" --format json
    ```
 4. Branch on `data.status`:
-   - `done` - report `data.filePath`, then give the user the clickable dashboard URL `http://localhost:7700` so they can see the saved topic in the Contexts page (the daemon is already serving it).
+   - `done` - report `data.filePath`, then run `brv webui` and give the user the printed Web UI URL so they can see the saved topic in the Contexts page. If the command reports a port conflict, run `brv webui --port <port>` and share that printed URL instead.
    - `needs-llm-step` with `step: "correct-html"` - fix validation errors from `data.errors[]` and continue the same session.
    - `failed` - report the error messages.
 
@@ -107,7 +108,7 @@ Every `--format json` response is wrapped in `{ "command", "data", "success", "t
 }
 ```
 
-→ Only now is the topic saved. Report `data.filePath` and hand the user the dashboard URL `http://localhost:7700` so they can open the Contexts page and see it.
+→ Only now is the topic saved. Report `data.filePath`, run `brv webui`, and hand the user the printed Web UI URL so they can open the Contexts page and see it. If the command reports a port conflict, run `brv webui --port <port>` and share that printed URL instead.
 
 ## HTML Topic Contract
 
@@ -191,8 +192,8 @@ Then tell the user what needs review.
 
 On `data.status: "done"`, the topic is written to `.brv/context-tree/<data.filePath>`. To let the user actually see it, point them at the dashboard:
 
-- Give the user the clickable URL `http://localhost:7700` — it opens the **Contexts page**, which renders the whole `.brv/context-tree/`. The path you just saved (e.g. `security/auth`) shows up as a node in the tree with its rendered content, edit controls, change history, and last-updated metadata.
-- The dashboard is already running — the daemon serves it on port `7700` by default, so the URL works the moment a curate succeeds; nothing extra to start. (`brv webui` opens the same dashboard in the browser if the user prefers a command.)
+- Run `brv webui` and give the user the printed Web UI URL. It opens the **Contexts page**, which renders the whole `.brv/context-tree/`. The path you just saved (e.g. `security/auth`) shows up as a node in the tree with its rendered content, edit controls, change history, and last-updated metadata.
+- If `brv webui` reports a port conflict or the user needs a different port, run `brv webui --port <port>` and give the user that newly printed URL instead.
 
 ## Common Mistakes
 
@@ -202,4 +203,4 @@ On `data.status: "done"`, the topic is written to `.brv/context-tree/<data.fileP
 | Omitting `keywords` when retrieval terms are obvious | Add comma-separated `keywords` on `<bv-topic>` |
 | Reporting completion before a session reaches `data.status: "done"` | Wait for `done` before telling the user the topic is saved |
 | Overwriting an existing path without preserving prior facts | Merge existing content unless the user explicitly wants replacement |
-| Saying the topic is saved without showing the user where to see it | After `done`, give the user the dashboard URL (`http://localhost:7700`, Contexts page) and the `filePath` |
+| Saying the topic is saved without showing the user where to see it | After `done`, give the user `data.filePath`, run `brv webui`, and share the printed Web UI URL for the Contexts page |
