@@ -100,7 +100,7 @@ Saved:
 <pain-naming + commitment paragraph — 2 short sentences>
 
 Lives at .brv/context-tree/ — local-only.
-See it in your browser: http://localhost:<served-port>  — or run brv webui if that link doesn't open.
+See it in your browser: http://localhost:7700  — or run brv webui if that link doesn't open.
 Also version-controlled, cloud-syncable, and shareable across agents — more at the end.
 ```
 
@@ -127,7 +127,7 @@ model, your reliability stance, and the context you just shared. You
 stop re-explaining. You start where you left off.
 
 Lives at .brv/context-tree/ — local-only.
-See it in your browser: http://localhost:<served-port>
+See it in your browser: http://localhost:7700
 Also version-controlled, cloud-syncable, and shareable across agents — more at the end.
 ```
 
@@ -135,7 +135,7 @@ Also version-controlled, cloud-syncable, and shareable across agents — more at
 
 The browser URL is the **verifiable** trust proof — the user can click it in 2 seconds and see their memory in a real local dashboard. Stronger than any worded assurance.
 
-Use the served Web UI link, such as `http://localhost:<served-port>`; default `http://localhost:7700` unless a custom port is already serving. Do NOT run `brv webui` as part of every tour closeout just to produce this link. If that link does not open, tell the user they can run `brv webui` to open the dashboard. Use `brv webui --port <port>` only when the user asks to open/change the dashboard port or the current port has a conflict.
+Use `http://localhost:7700` for the Web UI link unless a known custom Web UI port is already serving, in which case use that localhost URL. Do NOT run `brv webui` as part of every tour closeout just to produce this link. If that link does not open, tell the user they can run `brv webui` to open the dashboard. Use `brv webui --port <port>` only when the user asks to open/change the dashboard port or the current port has a conflict.
 
 Do NOT ask "is this right?" — that turns the artifact into a form. Users who want to correct it will; users who don't, won't be slowed down.
 

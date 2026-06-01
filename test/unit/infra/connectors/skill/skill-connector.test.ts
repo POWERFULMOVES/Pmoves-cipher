@@ -158,10 +158,11 @@ describe('SkillConnector', () => {
       expect(content).to.include('brv curate')
       expect(content).to.include('brv curate view')
       expect(content).to.include('brv webui')
-      expect(content).to.include('http://localhost:<served-port>')
-      expect(content).to.include('default `http://localhost:7700`')
+      expect(content).to.include('http://localhost:7700')
+      expect(content).to.include('known custom Web UI port is already serving')
       expect(content).to.include('If that link does not open, tell the user they can run `brv webui`')
       expect(content).to.include('brv webui --port <port>')
+      expect(content).not.to.include('http://localhost:<served-port>')
       expect(content).not.to.include('printed Web UI URL')
       expect(content).to.include('## When To Use')
       expect(content).to.include('## Quick Reference')
@@ -187,7 +188,7 @@ describe('SkillConnector', () => {
       expect(swarmContent).to.include('parallel')
     })
 
-    it('should guide installed skill docs to share the served Web UI link with command fallback', async () => {
+    it('should guide installed skill docs to share the default Web UI link with command fallback', async () => {
       const agent = 'Claude Code' as const
       const {projectPath} = SKILL_CONNECTOR_CONFIGS[agent]
       await skillConnector.install(agent)
@@ -199,12 +200,13 @@ describe('SkillConnector', () => {
 
       for (const content of contents) {
         expect(content).not.to.include('printed Web UI URL')
+        expect(content).not.to.include('http://localhost:<served-port>')
         expect(content).not.to.include('run `brv webui` after every successful curate')
       }
 
       const onboardingContent = await readFile(path.join(skillDir, 'onboarding.md'), 'utf8')
-      expect(onboardingContent).to.include('http://localhost:<served-port>')
-      expect(onboardingContent).to.include('default `http://localhost:7700`')
+      expect(onboardingContent).to.include('http://localhost:7700')
+      expect(onboardingContent).to.include('known custom Web UI port is already serving')
       expect(onboardingContent).to.include('If that link does not open, tell the user they can run `brv webui`')
       expect(onboardingContent).to.include('brv webui --port <port>')
     })
@@ -224,10 +226,11 @@ describe('SkillConnector', () => {
       expect(curateContent).to.include('bv-rule')
       expect(curateContent).to.include('--overwrite')
       expect(curateContent).to.include('## Example Session Responses')
-      expect(curateContent).to.include('http://localhost:<served-port>')
-      expect(curateContent).to.include('default `http://localhost:7700`')
+      expect(curateContent).to.include('http://localhost:7700')
+      expect(curateContent).to.include('known custom Web UI port is already serving')
       expect(curateContent).to.include('If that link does not open, tell the user they can run `brv webui`')
       expect(curateContent).to.include('brv webui --port <port>')
+      expect(curateContent).not.to.include('http://localhost:<served-port>')
       expect(curateContent).not.to.include('printed Web UI URL')
     })
 
