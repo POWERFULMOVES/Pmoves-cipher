@@ -14,16 +14,39 @@ interface FakeAgentOpts {
 	embedder?: { embed: (text: string) => Promise<number[]> };
 }
 
+function embeddingManagerOf(opts: FakeAgentOpts) {
+	return opts.embedder
+		? { hasAvailableEmbeddings: () => true, getEmbedder: () => opts.embedder }
+		: { hasAvailableEmbeddings: () => false, getEmbedder: () => undefined };
+}
+
+// Mirrors the real single VectorStoreManager: getStore() ignores any arg, and
+// getInfo() nests the dimension under `backend` (see VectorStoreManager.getInfo).
 function makeAgent(store: InMemoryBackend, opts: FakeAgentOpts = {}): any {
 	return {
 		services: {
 			vectorStoreManager: {
-				getStore: () => store,
-				getInfo: () => ({ dimension: store.getDimension() }),
+				getStore: (_type?: string) => store,
+				getInfo: () => ({ backend: { dimension: store.getDimension() } }),
 			},
-			embeddingManager: opts.embedder
-				? { hasAvailableEmbeddings: () => true, getEmbedder: () => opts.embedder }
-				: { hasAvailableEmbeddings: () => false, getEmbedder: () => undefined },
+			embeddingManager: embeddingManagerOf(opts),
+		},
+	};
+}
+
+// Mirrors DualCollectionVectorManager / MultiCollectionVectorManager, whose
+// getStore(type) THROWS when called with no collection type.
+function makeDualAgent(store: InMemoryBackend, opts: FakeAgentOpts = {}): any {
+	return {
+		services: {
+			vectorStoreManager: {
+				getStore: (type?: string) => {
+					if (!type) throw new Error('collection type required');
+					return type === 'knowledge' ? store : null;
+				},
+				getInfo: () => ({ backend: { dimension: store.getDimension() } }),
+			},
+			embeddingManager: embeddingManagerOf(opts),
 		},
 	};
 }
@@ -175,5 +198,60 @@ describe('GET /api/memory/search', () => {
 		// embedder called for both the insert and the query
 		expect(embed).toHaveBeenCalled();
 		expect(res.body.results.some((r: any) => r.content === 'semantic item')).toBe(true);
+	});
+});
+
+describe('validation + collection + tag-filter edge cases', () => {
+	it('returns 400 for a non-numeric :id on GET', async () => {
+		const store = makeStore();
+		await store.connect();
+		const app = makeApp(makeAgent(store));
+		const res = await request(app).get('/api/memory/not-a-number');
+		expect(res.status).toBe(400);
+	});
+
+	it('works when the manager requires a collection type (Dual/Multi manager)', async () => {
+		const store = makeStore();
+		await store.connect();
+		const app = makeApp(makeDualAgent(store));
+
+		const created = await request(app).post('/api/memory').send({ content: 'dual store item' });
+		expect(created.status).toBe(201);
+
+		const got = await request(app).get(`/api/memory/${created.body.id}`);
+		expect(got.status).toBe(200);
+		expect(got.body.content).toBe('dual store item');
+	});
+
+	it('POST succeeds on the no-embedder path when store dimension != 1', async () => {
+		// DIM is 3; the zero-vector fallback must size to the store dimension
+		// (read from getInfo().backend.dimension), not default to 1.
+		const store = makeStore();
+		await store.connect();
+		const app = makeApp(makeAgent(store)); // no embedder
+		const res = await request(app).post('/api/memory').send({ content: 'no embedder' });
+		expect(res.status).toBe(201);
+	});
+
+	it('does not drop tag-matching results ranked beyond the limit window', async () => {
+		const store = makeStore();
+		await store.connect();
+		const app = makeApp(makeAgent(store)); // no embedder -> list() path
+
+		// Insert 5 untagged, then 1 tagged last (so it is beyond a limit=3 window)
+		for (let i = 0; i < 5; i++) {
+			await request(app)
+				.post('/api/memory')
+				.send({ content: `plain ${i}`, tags: [] });
+		}
+		await request(app)
+			.post('/api/memory')
+			.send({ content: 'tagged one', tags: ['needle'] });
+
+		const res = await request(app)
+			.get('/api/memory/search')
+			.query({ q: 'x', limit: 3, tags: 'needle' });
+		expect(res.status).toBe(200);
+		expect(res.body.results.map((r: any) => r.content)).toContain('tagged one');
 	});
 });

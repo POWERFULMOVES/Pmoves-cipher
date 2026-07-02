@@ -18,15 +18,15 @@ import { logger } from '@core/logger/index.js';
  * status code on failures.
  */
 
-// The vector store keys entries by numeric id. Seed from the wall clock
-// (~1.75e12, well under Number.MAX_SAFE_INTEGER) and increment: ids are
-// monotonic within a process, and a restarted process seeds from a later
-// clock value, so ids do not collide across restarts even against a
-// persistent backend.
-let __idSeq = Date.now();
+// The vector store keys entries by numeric id. Combine the wall clock with
+// random low bits: Date.now() (~1.75e12) * 4096 + rand(0..4095) stays under
+// Number.MAX_SAFE_INTEGER (~9.007e15) while giving 4096 slots per millisecond.
+// NOTE: the default backend is per-process in-memory, where ids never cross
+// instances. For a SHARED persistent backend across horizontally-scaled
+// instances, prefer a store-native / DB sequence — this scheme minimises but
+// cannot fully eliminate cross-instance id collision.
 function generateMemoryId(): number {
-	__idSeq += 1;
-	return __idSeq;
+	return Date.now() * 4096 + Math.floor(Math.random() * 4096);
 }
 
 // Narrow structural type for the subset of VectorStore we use here.
@@ -47,8 +47,13 @@ interface MinimalVectorStore {
 }
 
 function getStore(agent: MemAgent): MinimalVectorStore | null {
-	const manager = agent.services?.vectorStoreManager as { getStore?: () => unknown } | undefined;
-	return (manager?.getStore?.() ?? null) as MinimalVectorStore | null;
+	// Pass the 'knowledge' collection type: DualCollectionVectorManager and
+	// MultiCollectionVectorManager REQUIRE a collection arg (they throw on
+	// undefined), while the single VectorStoreManager.getStore() ignores it.
+	const manager = agent.services?.vectorStoreManager as
+		| { getStore?: (type?: string) => unknown }
+		| undefined;
+	return (manager?.getStore?.('knowledge') ?? null) as MinimalVectorStore | null;
 }
 
 /**
@@ -65,10 +70,14 @@ async function resolveVector(agent: MemAgent, text: string): Promise<number[]> {
 			return embedder.embed(text);
 		}
 	}
+	// VectorStoreManager.getInfo() nests the dimension under `backend`; tolerate a
+	// top-level `dimension` too for safety. Falling back to 1 would break inserts
+	// into a non-1-dimensional store, so read the real configured dimension.
 	const manager = agent.services?.vectorStoreManager as
-		| { getInfo?: () => { dimension?: number } }
+		| { getInfo?: () => { backend?: { dimension?: number }; dimension?: number } }
 		| undefined;
-	const dim = manager?.getInfo?.()?.dimension ?? 1;
+	const info = manager?.getInfo?.();
+	const dim = info?.backend?.dimension ?? info?.dimension ?? 1;
 	return new Array(dim).fill(0);
 }
 
@@ -180,25 +189,32 @@ export function createMemoryRoutes(agent: MemAgent): Router {
 			if (category) filters.category = category;
 			const storeFilters = Object.keys(filters).length ? filters : undefined;
 
+			// Tags aren't a store-native filter (payload.tags is an array), so they're
+			// applied in JS after fetch. Widen the candidate pool when a tag filter is
+			// present so matches ranked beyond `limit` aren't silently dropped, then
+			// slice back to `limit`.
+			const hasTagFilter = Boolean(tags && tags.length);
+			const fetchLimit = hasTagFilter ? Math.max(limit * 10, 100) : limit;
+
 			const em = agent.services?.embeddingManager;
 			let results: StoredResult[];
 			if (q && em?.hasAvailableEmbeddings?.()) {
 				const embedder = em.getEmbedder('default');
 				if (embedder) {
 					const vector = await embedder.embed(q);
-					results = await store.search(vector, limit, storeFilters);
+					results = await store.search(vector, fetchLimit, storeFilters);
 				} else {
-					results = (await store.list(storeFilters, limit))[0];
+					results = (await store.list(storeFilters, fetchLimit))[0];
 				}
 			} else {
-				results = (await store.list(storeFilters, limit))[0];
+				results = (await store.list(storeFilters, fetchLimit))[0];
 			}
 
 			let mapped = results.map(toContract);
-			if (tags && tags.length) {
-				mapped = mapped.filter(
-					m => Array.isArray(m.tags) && tags.every(t => (m.tags as unknown[]).includes(t))
-				);
+			if (hasTagFilter) {
+				mapped = mapped
+					.filter(m => Array.isArray(m.tags) && tags!.every(t => (m.tags as unknown[]).includes(t)))
+					.slice(0, limit);
 			}
 
 			return res.status(200).json({ results: mapped });
