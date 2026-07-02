@@ -1,0 +1,9 @@
+# pnpm >= 10 blocks dependency build/install scripts by default. Explicitly
+# allow only the native packages that legitimately need them (compiled/native
+# binaries), keeping every other dependency's scripts blocked.
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild
+  - faiss-node
+  - protobufjs
+  - puppeteer

@@ -31,6 +31,7 @@ import { createMcpRoutes } from './routes/mcp.js';
 import { createConfigRoutes } from './routes/config.js';
 import { createLlmRoutes } from './routes/llm.js';
 import { createSearchRoutes } from './routes/search.js';
+import { createMemoryRoutes } from './routes/memory.js';
 import { createWebhookRoutes } from './routes/webhook.js';
 
 export interface ApiServerConfig {
@@ -805,6 +806,7 @@ export class ApiServer {
 		this.app.use(this.buildApiRoute('/llm'), createLlmRoutes(this.agent));
 		this.app.use(this.buildApiRoute('/config'), createConfigRoutes(this.agent));
 		this.app.use(this.buildApiRoute('/search'), createSearchRoutes(this.agent));
+		this.app.use(this.buildApiRoute('/memory'), createMemoryRoutes(this.agent));
 		this.app.use(this.buildApiRoute('/webhooks'), createWebhookRoutes(this.agent));
 
 		// Legacy endpoint for MCP server connection
