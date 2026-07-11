@@ -1,3 +1,10 @@
+# Single-package workspace. pnpm 9 requires a non-empty `packages` field
+# whenever this file exists ("ERROR packages field missing or empty" from any
+# `pnpm run` otherwise — hit in the Docker build, which pins pnpm@9.14.0);
+# pnpm 10 accepts it identically.
+packages:
+  - '.'
+
 # pnpm >= 10 blocks dependency build/install scripts by default. Explicitly
 # allow only the native packages that legitimately need them (compiled/native
 # binaries), keeping every other dependency's scripts blocked.
