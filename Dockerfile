@@ -16,6 +16,13 @@ RUN apk add --no-cache \
     g++ \
     && rm -rf /var/cache/apk/*
 
+# musl node advertises unofficial-builds.nodejs.org as its dist host, so
+# node-gyp fetches compile headers from there (better-sqlite3 has no musl
+# prebuilt and must compile). That host is flaky — reproducible ECONNRESET
+# after a ~130s hang killed `pnpm install`. Headers are version-keyed and
+# identical on the official mirror; pin node-gyp to nodejs.org instead.
+ENV npm_config_disturl=https://nodejs.org/dist
+
 WORKDIR /app
 
 # Copy package files first for better caching
