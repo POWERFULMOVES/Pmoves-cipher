@@ -26,7 +26,7 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
 
       const embedding = await sidecar.embed(content)
       if (embedding) {
-        await sidecar.storeVector(created.id, embedding, category, allTags)
+        await sidecar.storeVector(created.id, embedding, category, allTags, content)
       }
 
       nats.emitStored(created.id, category, allTags)
@@ -50,7 +50,7 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
       let results: Array<{id: string; content: string; category: string; tags: string[]; created_at: string; score?: number}>
 
       if (queryEmbedding) {
-        const vectorHits = await sidecar.search(queryEmbedding, limit, category)
+        const vectorHits = await sidecar.search(queryEmbedding, q, limit, category)
         if (vectorHits.length > 0) {
           const memories = await Promise.all(
             vectorHits.map(async (hit) => {

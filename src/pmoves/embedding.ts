@@ -28,6 +28,10 @@ const QDRANT_API_KEY = process.env.QDRANT_API_KEY ?? ''
 const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://pmoves-ollama:11434'
 const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? 'qwen3-embedding:4b'
 
+// Named vector fields in the Qdrant collection.
+const DENSE_FIELD = 'dense'
+const BM25_FIELD = 'bm25'
+
 export interface EmbeddingResult {
   vector: number[]
   dim: number
@@ -129,12 +133,15 @@ class EmbeddingSidecar {
         method: 'PUT',
         headers,
         body: JSON.stringify({
-          vectors: {size: this.embeddingDim, distance: 'Cosine'},
+          vectors: {[DENSE_FIELD]: {size: this.embeddingDim, distance: 'Cosine'}},
+          sparse_vectors: {
+            [BM25_FIELD]: {modifier: 'idf'},
+          },
         }),
         signal: AbortSignal.timeout(5000),
       })
       if (createResp.ok) {
-        process.stdout.write(`pmoves-embed: created Qdrant collection ${this.qdrantCollection} (${this.embeddingDim}d)\n`)
+        process.stdout.write(`pmoves-embed: created Qdrant collection ${this.qdrantCollection} (${this.embeddingDim}d dense + BM25 sparse)\n`)
         this.collectionReady = true
         return true
       }
@@ -146,7 +153,7 @@ class EmbeddingSidecar {
     }
   }
 
-  async storeVector(memoryId: string, embedding: EmbeddingResult, category: string, tags: string[]): Promise<void> {
+  async storeVector(memoryId: string, embedding: EmbeddingResult, category: string, tags: string[], content: string): Promise<void> {
     if (!(await this.ensureCollection())) return
     try {
       const headers: Record<string, string> = {'Content-Type': 'application/json'}
@@ -157,24 +164,31 @@ class EmbeddingSidecar {
       // generate a UUID for the Qdrant point id and store the memoryId in payload.
       const pointId = randomUUID()
 
-      await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points`, {
+      const resp = await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points`, {
         method: 'PUT',
         headers,
         body: JSON.stringify({
           points: [{
             id: pointId,
-            vector: embedding.vector,
-            payload: {memoryId, category, tags},
+            vector: {
+              [DENSE_FIELD]: embedding.vector,
+              [BM25_FIELD]: {text: content, model: 'qdrant/bm25'},
+            },
+            payload: {memoryId, category, tags, content},
           }],
         }),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(10000),
       })
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '')
+        process.stderr.write(`pmoves-embed: Qdrant store returned ${resp.status} for memory ${memoryId}: ${body}\n`)
+      }
     } catch (error) {
       process.stderr.write(`pmoves-embed: Qdrant store failed — ${error}\n`)
     }
   }
 
-  async search(queryEmbedding: EmbeddingResult, limit: number, category?: string): Promise<SearchResult[]> {
+  async search(queryEmbedding: EmbeddingResult, queryText: string, limit: number, category?: string): Promise<SearchResult[]> {
     if (!(await this.ensureCollection())) return []
     try {
       const headers: Record<string, string> = {'Content-Type': 'application/json'}
@@ -184,31 +198,47 @@ class EmbeddingSidecar {
         ? {must: [{key: 'category', match: {value: category}}]}
         : undefined
 
-      const resp = await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points/search`, {
+      // Hybrid query: dense semantic prefetch + BM25 sparse prefetch → RRF fusion.
+      // The dense path uses the pre-computed embedding vector; the BM25 path
+      // passes the raw query text and lets Qdrant tokenize it server-side.
+      // Qdrant 1.16+: fusion goes in the top-level "query" field, not as a sibling.
+      const resp = await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points/query`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          vector: queryEmbedding.vector,
+          prefetch: [
+            {
+              query: queryEmbedding.vector,
+              using: DENSE_FIELD,
+              limit: limit * 3,
+              ...(filter && {filter}),
+            },
+            {
+              query: {text: queryText, model: 'qdrant/bm25'},
+              using: BM25_FIELD,
+              limit: limit * 3,
+              ...(filter && {filter}),
+            },
+          ],
+          query: {fusion: 'rrf'},
           limit,
-          ...(filter && {filter}),
           with_payload: true,
         }),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(10000),
       })
       if (!resp.ok) {
-        process.stderr.write(`pmoves-embed: Qdrant search returned ${resp.status}\n`)
+        process.stderr.write(`pmoves-embed: Qdrant query returned ${resp.status}\n`)
         return []
       }
-      const data = await resp.json() as {result: Array<{id: string | number, score: number, payload?: {memoryId?: string}}>}
-      // Qdrant point id is a UUID (per storeVector); the ByteRover memory id
-      // lives in payload.memoryId. Surface the memory id so memory-routes.ts
-      // can map hits back to MemoryManager.get(). Legacy rows without
-      // payload.memoryId are dropped (their point id is not a valid memory id).
-      return (data.result ?? [])
-        .map((r) => ({id: r.payload?.memoryId ?? '', score: r.score}))
+      const data = await resp.json() as {result: {points: Array<{id: string | number, score: number, payload?: {memoryId?: string}}>}}
+      const points = data.result?.points ?? []
+      // Surface payload.memoryId so memory-routes.ts can map hits back to
+      // MemoryManager.get(). Legacy rows without payload.memoryId are dropped.
+      return points
+        .map((p) => ({id: p.payload?.memoryId ?? '', score: p.score}))
         .filter((r) => r.id)
     } catch (error) {
-      process.stderr.write(`pmoves-embed: Qdrant search failed — ${error}\n`)
+      process.stderr.write(`pmoves-embed: Qdrant query failed — ${error}\n`)
       return []
     }
   }

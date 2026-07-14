@@ -135,7 +135,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
       const sidecar = getEmbeddingSidecar()
       const embedding = await sidecar.embed(content)
       if (embedding) {
-        await sidecar.storeVector(created.id, embedding, category, allTags)
+        await sidecar.storeVector(created.id, embedding, category, allTags, content)
       }
       nats.emitStored(created.id, category, allTags)
       return {
@@ -150,7 +150,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
       let results: Array<{id: string; content: string; category: string; tags: string[]; score?: number}>
 
       if (queryEmbedding) {
-        const vectorHits = await sidecar.search(queryEmbedding, Math.min(limit, 100), category)
+        const vectorHits = await sidecar.search(queryEmbedding, query, Math.min(limit, 100), category)
         if (vectorHits.length > 0) {
           const memories = await Promise.all(
             vectorHits.map(async (hit) => {
