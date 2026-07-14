@@ -101,7 +101,8 @@
     "update-notifier": "^7.3.1",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.24.6",
-    "zustand": "^5.0.11"
+    "zustand": "^5.0.11",
+    "nats": "^2.29.0"
   },
   "devDependencies": {
     "@eslint/compat": "^1",
@@ -244,8 +245,5 @@
     "@tanstack/react-query",
     "react-router-dom",
     "zustand"
-  ],
-  "optionalDependencies": {
-    "nats": "^2.29.0"
-  }
+  ]
 }
