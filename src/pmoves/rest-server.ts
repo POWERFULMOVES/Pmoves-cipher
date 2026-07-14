@@ -1,6 +1,6 @@
 import express from 'express'
-import {createBlobStorage} from '../../agent/infra/blob/blob-storage-factory.js'
-import {MemoryManager} from '../../agent/infra/memory/memory-manager.js'
+import {createBlobStorage} from '../agent/infra/blob/blob-storage-factory.js'
+import {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import {createPmovesAuthMiddleware} from './auth.js'
 import {createHealthRouter} from './health.js'
 import {createMemoryRoutes} from './memory-routes.js'
@@ -22,8 +22,12 @@ async function main(): Promise<void> {
   const {port, host} = parseArgs()
   const natsUrl = process.env.NATS_URL ?? ''
   const storageDir = process.env.PMOVES_STORAGE_DIR
+  const useInMemory = !storageDir
 
-  const blobStorage = createBlobStorage(storageDir ? {storageDir} : undefined)
+  const blobStorage = createBlobStorage(
+    useInMemory ? {inMemory: true} : {storageDir},
+  )
+  await blobStorage.initialize()
   const memoryManager = new MemoryManager(blobStorage)
 
   let nats: PmovesNatsEmitter

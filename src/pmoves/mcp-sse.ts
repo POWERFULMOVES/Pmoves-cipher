@@ -6,7 +6,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import type {MemoryManager} from '../../agent/infra/memory/memory-manager.js'
+import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
 
 const TOOL_STORE = 'pmoves_cipher_store'
@@ -139,10 +139,10 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
 
     if (name === TOOL_SEARCH) {
       const {query, category, limit = 10} = args as {query: string; category?: string; limit?: number}
-      const memories = await memoryManager.list({
-        limit: Math.min(limit, 100),
-        tags: category ? [category] : undefined,
-      })
+      const memories = await memoryManager.list({limit: Math.min(limit, 100)})
+      const filtered = category
+        ? memories.filter((m) => (m.metadata?.category as string) === category || (m.tags ?? []).includes(category))
+        : memories
       const results = memories.map((m) => ({
         id: m.id,
         content: m.content,

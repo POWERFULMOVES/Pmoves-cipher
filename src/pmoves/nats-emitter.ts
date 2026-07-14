@@ -17,7 +17,27 @@ export async function createNatsEmitter(url: string): Promise<PmovesNatsEmitter>
   }
   try {
     const natsModule = await import('nats')
-    const nc = await natsModule.connect({servers: url})
+
+    // Parse credentials from URL (nats://user:pass@host:port)
+    let servers: string = url
+    let user: string | undefined
+    let pass: string | undefined
+    try {
+      const parsed = new URL(url)
+      if (parsed.username) {
+        user = decodeURIComponent(parsed.username)
+        pass = parsed.password ? decodeURIComponent(parsed.password) : undefined
+        servers = `${parsed.protocol}//${parsed.host}`
+      }
+    } catch {
+      // URL parse failed — pass raw string to nats client
+    }
+
+    const nc = await natsModule.connect({
+      servers,
+      ...(user && {user}),
+      ...(pass && {pass}),
+    })
     const publish = (subject: string, payload: Record<string, unknown>) => {
       try {
         nc.publish(subject, new TextEncoder().encode(JSON.stringify({...payload, timestamp: new Date().toISOString()})))

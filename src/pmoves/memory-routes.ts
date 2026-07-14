@@ -1,5 +1,5 @@
 import {Router} from 'express'
-import type {MemoryManager} from '../../agent/infra/memory/memory-manager.js'
+import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
 
 const DEFAULT_LIMIT = 10
@@ -37,11 +37,11 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
       }
       const limit = Math.min(Math.max(Number(req.query.limit ?? DEFAULT_LIMIT) || DEFAULT_LIMIT, 1), MAX_LIMIT)
       const category = req.query.category ? String(req.query.category) : undefined
-      const memories = await memoryManager.list({
-        limit,
-        tags: category ? [category] : undefined,
-      })
-      const results = memories.map((m) => ({
+      const memories = await memoryManager.list({limit})
+      const filtered = category
+        ? memories.filter((m) => (m.metadata?.category as string) === category || (m.tags ?? []).includes(category))
+        : memories
+      const results = filtered.map((m) => ({
         id: m.id,
         content: m.content,
         category: (m.metadata?.category as string) ?? 'context',
