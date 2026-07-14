@@ -191,7 +191,7 @@ class EmbeddingSidecar {
           vector: queryEmbedding.vector,
           limit,
           ...(filter && {filter}),
-          with_payload: false,
+          with_payload: true,
         }),
         signal: AbortSignal.timeout(5000),
       })
@@ -199,8 +199,14 @@ class EmbeddingSidecar {
         process.stderr.write(`pmoves-embed: Qdrant search returned ${resp.status}\n`)
         return []
       }
-      const data = await resp.json() as {result: Array<{id: string, score: number}>}
-      return (data.result ?? []).map((r) => ({id: String(r.id), score: r.score}))
+      const data = await resp.json() as {result: Array<{id: string | number, score: number, payload?: {memoryId?: string}}>}
+      // Qdrant point id is a UUID (per storeVector); the ByteRover memory id
+      // lives in payload.memoryId. Surface the memory id so memory-routes.ts
+      // can map hits back to MemoryManager.get(). Legacy rows without
+      // payload.memoryId are dropped (their point id is not a valid memory id).
+      return (data.result ?? [])
+        .map((r) => ({id: r.payload?.memoryId ?? '', score: r.score}))
+        .filter((r) => r.id)
     } catch (error) {
       process.stderr.write(`pmoves-embed: Qdrant search failed — ${error}\n`)
       return []
