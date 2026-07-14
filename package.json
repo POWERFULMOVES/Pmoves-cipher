@@ -244,5 +244,8 @@
     "@tanstack/react-query",
     "react-router-dom",
     "zustand"
-  ]
+  ],
+  "optionalDependencies": {
+    "nats": "^2.29.0"
+  }
 }
