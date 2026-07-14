@@ -4,6 +4,7 @@ import {MemoryManager} from '../../agent/infra/memory/memory-manager.js'
 import {createPmovesAuthMiddleware} from './auth.js'
 import {createHealthRouter} from './health.js'
 import {createMemoryRoutes} from './memory-routes.js'
+import {createMcpSseRouter} from './mcp-sse.js'
 import {createNatsEmitter, type PmovesNatsEmitter} from './nats-emitter.js'
 
 const DEFAULT_PORT = 8105
@@ -42,10 +43,8 @@ async function main(): Promise<void> {
     if (req.path === '/health' || req.path === '/healthz') return next()
     return createPmovesAuthMiddleware()(req, res, next)
   })
-  app.use(
-    '/api',
-    wrapMemoryRoutesWithNats(createMemoryRoutes(memoryManager), memoryManager, nats),
-  )
+  app.use('/api', createMemoryRoutes(memoryManager, nats))
+  app.use('/mcp', createMcpSseRouter(memoryManager, nats))
 
   return new Promise((resolve) => {
     const server = app.listen(port, host, () => {
@@ -59,13 +58,6 @@ async function main(): Promise<void> {
     process.on('SIGTERM', shutdown)
     process.on('SIGINT', shutdown)
   })
-}
-
-function wrapMemoryRoutesWithNats(_router: express.Router, _mm: MemoryManager, _nats: PmovesNatsEmitter): express.Router {
-  // TODO Phase 3: intercept POST /memory to emit cipher.memory.stored.v1,
-  // GET /memory/search to emit cipher.memory.searched.v1.
-  // For now the routes are wired; NATS emission will be added in Phase 3.
-  return _router
 }
 
 main().catch((error) => {

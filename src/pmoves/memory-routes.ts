@@ -1,10 +1,11 @@
 import {Router} from 'express'
 import type {MemoryManager} from '../../agent/infra/memory/memory-manager.js'
+import type {PmovesNatsEmitter} from './nats-emitter.js'
 
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 100
 
-export function createMemoryRoutes(memoryManager: MemoryManager): Router {
+export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNatsEmitter): Router {
   const router = Router()
 
   router.post('/memory', async (req, res) => {
@@ -14,11 +15,13 @@ export function createMemoryRoutes(memoryManager: MemoryManager): Router {
         res.status(400).json({error: 'content is required and must be a string'})
         return
       }
+      const allTags = [category, ...tags].filter(Boolean)
       const created = await memoryManager.create({
         content,
-        tags: [category, ...tags].filter(Boolean),
+        tags: allTags,
         metadata: {category, ...metadata},
       })
+      nats.emitStored(created.id, category, allTags)
       res.status(201).json({id: created.id, embedding_id: null})
     } catch (error) {
       res.status(500).json({error: error instanceof Error ? error.message : String(error)})
@@ -45,6 +48,7 @@ export function createMemoryRoutes(memoryManager: MemoryManager): Router {
         tags: m.tags ?? [],
         created_at: new Date(m.createdAt).toISOString(),
       }))
+      nats.emitSearched(q, results.length, category)
       res.json({results})
     } catch (error) {
       res.status(500).json({error: error instanceof Error ? error.message : String(error)})
