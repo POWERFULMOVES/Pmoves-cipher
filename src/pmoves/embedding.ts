@@ -23,6 +23,8 @@ const DEFAULT_QDRANT_COLLECTION = process.env.QDRANT_COLLECTION ?? 'pmoves_ciphe
 const DEFAULT_EMBEDDING_MODEL = process.env.EMBEDDING_MODEL ?? 'tensorzero::embedding_model_name::qwen3_embedding_4b_local'
 const DEFAULT_EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM ?? 2560)
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY ?? ''
+const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://pmoves-ollama:11434'
+const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? 'qwen3-embedding:4b'
 
 export interface EmbeddingResult {
   vector: number[]
@@ -51,6 +53,12 @@ class EmbeddingSidecar {
   }
 
   async embed(text: string): Promise<EmbeddingResult | null> {
+    const tzResult = await this.embedTensorZero(text)
+    if (tzResult) return tzResult
+    return this.embedOllama(text)
+  }
+
+  private async embedTensorZero(text: string): Promise<EmbeddingResult | null> {
     try {
       const resp = await fetch(`${this.tensorzeroUrl}/openai/v1/embeddings`, {
         method: 'POST',
@@ -68,7 +76,30 @@ class EmbeddingSidecar {
       }
       return {vector: data.data[0].embedding, dim: data.data[0].embedding.length}
     } catch (error) {
-      process.stderr.write(`pmoves-embed: TensorZero unreachable — ${error}\n`)
+      process.stderr.write(`pmoves-embed: TensorZero unreachable — trying Ollama fallback\n`)
+      return null
+    }
+  }
+
+  private async embedOllama(text: string): Promise<EmbeddingResult | null> {
+    try {
+      const resp = await fetch(`${OLLAMA_URL}/api/embed`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: OLLAMA_EMBED_MODEL, input: text}),
+        signal: AbortSignal.timeout(10000),
+      })
+      if (!resp.ok) {
+        process.stderr.write(`pmoves-embed: Ollama returned ${resp.status}\n`)
+        return null
+      }
+      const data = await resp.json() as {embeddings: number[][]}
+      if (!data.embeddings?.[0]) {
+        return null
+      }
+      return {vector: data.embeddings[0], dim: data.embeddings[0].length}
+    } catch (error) {
+      process.stderr.write(`pmoves-embed: Ollama unreachable — ${error}\n`)
       return null
     }
   }
