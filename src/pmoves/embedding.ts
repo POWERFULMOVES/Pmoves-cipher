@@ -17,6 +17,8 @@
  *   EMBEDDING_DIM        — default 2560
  */
 
+import { randomUUID } from 'node:crypto'
+
 const DEFAULT_TENSORZERO_URL = process.env.TENSORZERO_URL ?? 'http://tensorzero-gateway:3030'
 const DEFAULT_QDRANT_URL = process.env.QDRANT_URL ?? 'http://qdrant:6333'
 const DEFAULT_QDRANT_COLLECTION = process.env.QDRANT_COLLECTION ?? 'pmoves_cipher_memory'
@@ -150,14 +152,19 @@ class EmbeddingSidecar {
       const headers: Record<string, string> = {'Content-Type': 'application/json'}
       if (QDRANT_API_KEY) headers.Authorization = `Bearer ${QDRANT_API_KEY}`
 
+      // Qdrant point IDs must be unsigned integers or UUID strings.
+      // Cipher memory IDs are 12-char nanoids (not UUID-compatible), so we
+      // generate a UUID for the Qdrant point id and store the memoryId in payload.
+      const pointId = randomUUID()
+
       await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points`, {
         method: 'PUT',
         headers,
         body: JSON.stringify({
           points: [{
-            id: memoryId,
+            id: pointId,
             vector: embedding.vector,
-            payload: {category, tags},
+            payload: {memoryId, category, tags},
           }],
         }),
         signal: AbortSignal.timeout(5000),
@@ -206,10 +213,13 @@ class EmbeddingSidecar {
       const headers: Record<string, string> = {'Content-Type': 'application/json'}
       if (QDRANT_API_KEY) headers.Authorization = `Bearer ${QDRANT_API_KEY}`
 
+      // Delete by payload filter (memoryId is stored in payload, not as point id)
       await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points/delete`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({points: [memoryId]}),
+        body: JSON.stringify({
+          filter: {must: [{key: 'memoryId', match: {value: memoryId}}]},
+        }),
         signal: AbortSignal.timeout(5000),
       })
     } catch (error) {
