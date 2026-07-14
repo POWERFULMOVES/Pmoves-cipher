@@ -8,6 +8,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
+import {getEmbeddingSidecar} from './embedding.js'
 
 const TOOL_STORE = 'pmoves_cipher_store'
 const TOOL_SEARCH = 'pmoves_cipher_search'
@@ -131,24 +132,51 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
         tags: allTags,
         metadata: {category},
       })
+      const sidecar = getEmbeddingSidecar()
+      const embedding = await sidecar.embed(content)
+      if (embedding) {
+        await sidecar.storeVector(created.id, embedding, category, allTags)
+      }
       nats.emitStored(created.id, category, allTags)
       return {
-        content: [{type: 'text', text: JSON.stringify({id: created.id, status: 'stored'})}],
+        content: [{type: 'text', text: JSON.stringify({id: created.id, status: 'stored', embedded: !!embedding})}],
       }
     }
 
     if (name === TOOL_SEARCH) {
       const {query, category, limit = 10} = args as {query: string; category?: string; limit?: number}
-      const memories = await memoryManager.list({limit: Math.min(limit, 100)})
-      const filtered = category
-        ? memories.filter((m) => (m.metadata?.category as string) === category || (m.tags ?? []).includes(category))
-        : memories
-      const results = memories.map((m) => ({
-        id: m.id,
-        content: m.content,
-        category: (m.metadata?.category as string) ?? 'context',
-        tags: m.tags ?? [],
-      }))
+      const sidecar = getEmbeddingSidecar()
+      const queryEmbedding = await sidecar.embed(query)
+      let results: Array<{id: string; content: string; category: string; tags: string[]; score?: number}>
+
+      if (queryEmbedding) {
+        const vectorHits = await sidecar.search(queryEmbedding, Math.min(limit, 100), category)
+        if (vectorHits.length > 0) {
+          const memories = await Promise.all(
+            vectorHits.map(async (hit) => {
+              try {
+                const m = await memoryManager.get(hit.id)
+                return {id: m.id, content: m.content, category: (m.metadata?.category as string) ?? 'context', tags: m.tags ?? [], score: hit.score}
+              } catch {
+                return null
+              }
+            }),
+          )
+          results = memories.filter((m): m is NonNullable<typeof m> => m !== null)
+        } else {
+          const memories = await memoryManager.list({limit: Math.min(limit, 100)})
+          results = (category
+            ? memories.filter((m) => (m.metadata?.category as string) === category || (m.tags ?? []).includes(category))
+            : memories
+          ).map((m) => ({id: m.id, content: m.content, category: (m.metadata?.category as string) ?? 'context', tags: m.tags ?? []}))
+        }
+      } else {
+        const memories = await memoryManager.list({limit: Math.min(limit, 100)})
+        results = (category
+          ? memories.filter((m) => (m.metadata?.category as string) === category || (m.tags ?? []).includes(category))
+          : memories
+        ).map((m) => ({id: m.id, content: m.content, category: (m.metadata?.category as string) ?? 'context', tags: m.tags ?? []}))
+      }
       nats.emitSearched(query, results.length, category)
       return {
         content: [{type: 'text', text: JSON.stringify({results})}],
