@@ -1,16 +1,19 @@
-# PMOVES Cipher Shim Dockerfile
-# Builds ByteRover Cipher + PMOVES additive overlay (src/pmoves/)
+# PMOVES Cipher Dockerfile
+# Builds ByteRover Cipher with PMOVES configuration overlay.
 #
-# Uses the project's pnpm + tsup build system to compile both the core
-# app AND the PMOVES overlay (rest-server.ts with /api/memory, /mcp/sse,
-# auth gate, NATS emitter, A2A discovery, health endpoint).
+# The upstream API server (src/app/api/server.ts) already provides:
+#   - /api/memory CRUD routes
+#   - MCP SSE at /api/mcp/sse
+#   - Bearer token auth (CIPHER_API_TOKEN)
+#   - WebSocket support
+#
+# This Dockerfile builds the upstream app and configures it for PMOVES.
 
 FROM node:20.18.1-alpine AS builder
 
 RUN apk add --no-cache python3 make g++ \
     && rm -rf /var/cache/apk/*
 
-# node-gyp disturl fix (same as regular Dockerfile)
 ENV npm_config_disturl=https://nodejs.org/dist
 
 WORKDIR /app
@@ -19,38 +22,31 @@ COPY package*.json pnpm-lock.yaml ./
 RUN npm install -g pnpm@9.14.0
 RUN rm pnpm-lock.yaml && pnpm install
 
-# Copy all source (including src/pmoves/)
 COPY . .
-
-# Build using the project's build system (tsup compiles all entry points
-# including src/pmoves/rest-server.ts)
 RUN pnpm run build:no-ui
-
-# Prune dev deps
 RUN pnpm prune --prod
 
 # --- Runtime stage ---
 FROM node:20.18.1-alpine
 
 RUN addgroup -g 1001 -S cipher && adduser -S cipher -u 1001
-
-RUN mkdir -p /data/cipher && \
-    chown -R cipher:cipher /data/cipher
+RUN mkdir -p /data/cipher && chown -R cipher:cipher /data/cipher
 
 WORKDIR /app
 
 COPY --from=builder --chown=cipher:cipher /app/dist ./dist
 COPY --from=builder --chown=cipher:cipher /app/node_modules ./node_modules
 COPY --from=builder --chown=cipher:cipher /app/package.json ./
+COPY --from=builder --chown=cipher:cipher /app/memAgent ./memAgent
 
-ENV PMOVES_STORAGE_DIR=/data/cipher
-ENV PMOVES_PORT=8105
-ENV PMOVES_HOST=0.0.0.0
+USER cipher
+
+ENV NODE_ENV=production
+ENV PORT=8105
 
 EXPOSE 8105
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
   CMD node -e "const http=require('http');http.get('http://127.0.0.1:8105/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
 
-# Run the PMOVES overlay entry point (not the upstream app)
-CMD ["node", "dist/src/pmoves/rest-server.cjs"]
+CMD ["node", "dist/src/app/index.cjs", "--mode", "api", "--port", "8105", "--host", "0.0.0.0"]
