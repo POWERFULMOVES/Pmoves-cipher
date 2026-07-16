@@ -43,10 +43,11 @@ USER cipher
 
 ENV NODE_ENV=production
 ENV PORT=8105
+ENV CONFIG_FILE=memAgent/cipher.yml
 
 EXPOSE 8105
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
   CMD node -e "const http=require('http');http.get('http://127.0.0.1:8105/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
 
-CMD ["node", "dist/src/app/index.cjs", "--mode", "api", "--port", "8105", "--host", "0.0.0.0"]
+CMD ["sh", "-c", "node dist/src/app/index.cjs --mode api --port ${PORT:-8105} --host 0.0.0.0 --agent ${CONFIG_FILE:-memAgent/cipher.yml}"]
