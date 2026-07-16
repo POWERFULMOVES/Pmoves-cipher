@@ -12,19 +12,17 @@ export default defineConfig([
 	},
 	{
 		entry: ['src/app/index.ts'],
-		format: ['cjs'], // Use only CommonJS for app to avoid dynamic require issues
+		format: ['cjs'],
 		outDir: 'dist/src/app',
 		shims: true,
 		bundle: true,
 		platform: 'node',
-		target: 'node18', // Specify Node.js target version
+		target: 'node18',
 		external: [
-			// Database drivers
 			'better-sqlite3',
 			'pg',
 			'neo4j-driver',
 			'ioredis',
-			// Node.js built-in modules to prevent bundling issues
 			'fs',
 			'path',
 			'os',
@@ -35,5 +33,33 @@ export default defineConfig([
 			'child_process',
 		],
 		noExternal: ['chalk', 'boxen', 'commander'],
+	},
+	{
+		entry: ['src/pmoves/rest-server.ts'],
+		format: ['cjs'],
+		outDir: 'dist/src/pmoves',
+		shims: true,
+		bundle: true,
+		platform: 'node',
+		target: 'node18',
+		external: [
+			'better-sqlite3',
+			'pg',
+			'neo4j-driver',
+			'ioredis',
+			'express',
+			'fs',
+			'path',
+			'os',
+			'crypto',
+			'stream',
+			'util',
+			'events',
+			'child_process',
+			'http',
+			'https',
+			'url',
+			'net',
+		],
 	},
 ]);
