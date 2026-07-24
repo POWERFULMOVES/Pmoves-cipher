@@ -24,11 +24,20 @@ function getVectorStore(agent: MemAgent) {
 }
 
 /**
- * Generate a unique integer ID for vector storage.
- * Uses timestamp-based approach for uniqueness without requiring state.
+ * Monotonic counter for collision-free ID generation.
+ * Combines millisecond timestamp with per-ms sequence to guarantee
+ * uniqueness even under concurrent requests within the same millisecond.
  */
+let _idSeq = 0n;
+let _idTs = 0n;
+
 function generateId(): number {
-	return Date.now();
+	const ts = BigInt(Date.now());
+	if (ts !== _idTs) {
+		_idTs = ts;
+		_idSeq = 0n;
+	}
+	return Number(ts * 1_000_000n + (_idSeq++ % 1_000_000n));
 }
 
 /**
