@@ -153,7 +153,7 @@ class EmbeddingSidecar {
     }
   }
 
-  async storeVector(memoryId: string, embedding: EmbeddingResult, category: string, tags: string[], content: string): Promise<void> {
+  async storeVector(memoryId: string, embedding: EmbeddingResult, category: string, tags: string[], content: string, agentId: string): Promise<void> {
     if (!(await this.ensureCollection())) return
     try {
       const headers: Record<string, string> = {'Content-Type': 'application/json'}
@@ -174,7 +174,7 @@ class EmbeddingSidecar {
               [DENSE_FIELD]: embedding.vector,
               [BM25_FIELD]: {text: content, model: 'qdrant/bm25'},
             },
-            payload: {memoryId, category, tags, content},
+            payload: {memoryId, category, tags, content, agentId},
           }],
         }),
         signal: AbortSignal.timeout(10000),
@@ -188,15 +188,18 @@ class EmbeddingSidecar {
     }
   }
 
-  async search(queryEmbedding: EmbeddingResult, queryText: string, limit: number, category?: string): Promise<SearchResult[]> {
+  async search(queryEmbedding: EmbeddingResult, queryText: string, limit: number, category?: string, agentId?: string): Promise<SearchResult[]> {
     if (!(await this.ensureCollection())) return []
     try {
       const headers: Record<string, string> = {'Content-Type': 'application/json'}
       if (QDRANT_API_KEY) headers.Authorization = `Bearer ${QDRANT_API_KEY}`
 
-      const filter = category
-        ? {must: [{key: 'category', match: {value: category}}]}
-        : undefined
+      // Build filter conditions. agentId uses `must` (hard scope) when present;
+      // category uses `must` as well. Both compose into a single must[] array.
+      const must: Array<{key: string, match: {value: string}}> = []
+      if (category) must.push({key: 'category', match: {value: category}})
+      if (agentId) must.push({key: 'agentId', match: {value: agentId}})
+      const filter = must.length > 0 ? {must} : undefined
 
       // Hybrid query: dense semantic prefetch + BM25 sparse prefetch → RRF fusion.
       // The dense path uses the pre-computed embedding vector; the BM25 path
@@ -243,18 +246,22 @@ class EmbeddingSidecar {
     }
   }
 
-  async deleteVector(memoryId: string): Promise<void> {
+  async deleteVector(memoryId: string, agentId?: string): Promise<void> {
     if (!(await this.ensureCollection())) return
     try {
       const headers: Record<string, string> = {'Content-Type': 'application/json'}
       if (QDRANT_API_KEY) headers.Authorization = `Bearer ${QDRANT_API_KEY}`
 
-      // Delete by payload filter (memoryId is stored in payload, not as point id)
+      // Delete by payload filter (memoryId is stored in payload, not as point id).
+      // If agentId is provided, scope the delete to that agent (defensive — prevents
+      // a compromised agent from deleting another agent's memories by guessing ids).
+      const must: Array<{key: string, match: {value: string}}> = [{key: 'memoryId', match: {value: memoryId}}]
+      if (agentId) must.push({key: 'agentId', match: {value: agentId}})
       await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points/delete`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          filter: {must: [{key: 'memoryId', match: {value: memoryId}}]},
+          filter: {must},
         }),
         signal: AbortSignal.timeout(5000),
       })
