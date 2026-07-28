@@ -209,7 +209,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
           )
           results = memories.filter((m): m is NonNullable<typeof m> => m !== null)
         } else {
-          const memories = await memoryManager.list({limit: Math.min(limit, 100)})
+          const memories = await memoryManager.list({limit: 1000})
           results = memories
             .filter((m) => {
               if (scopedAgentId && (m.metadata?.agentId as string) !== scopedAgentId) return false
@@ -219,7 +219,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
             .map((m) => ({id: m.id, content: m.content, category: (m.metadata?.category as string) ?? 'context', tags: m.tags ?? [], agentId: (m.metadata?.agentId as string) ?? 'unknown'}))
         }
       } else {
-        const memories = await memoryManager.list({limit: Math.min(limit, 100)})
+        const memories = await memoryManager.list({limit: 1000})
         results = memories
           .filter((m) => {
             if (scopedAgentId && (m.metadata?.agentId as string) !== scopedAgentId) return false
@@ -289,7 +289,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
           )
           results = memories.filter((m): m is NonNullable<typeof m> => m !== null)
         } else {
-          const memories = await memoryManager.list({limit: Math.min(limit, 20), tags: ['reasoning']})
+          const memories = await memoryManager.list({limit: 1000, tags: ['reasoning']})
           results = memories
             .filter((m) => !scopedAgentId || (m.metadata?.agentId as string) === scopedAgentId)
             .map((m) => ({id: m.id, content: m.content, category: 'reasoning', agentId: (m.metadata?.agentId as string) ?? 'unknown'}))
@@ -378,7 +378,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
 
       // If no semantic hits, fall back to most recent checkpoint for this agent
       if (results.length === 0) {
-        const memories = await memoryManager.list({limit: Math.min(limit, 10), tags: ['agent_checkpoint']})
+        const memories = await memoryManager.list({limit: 1000, tags: ['agent_checkpoint']})
         results = memories
           .filter((m) => (m.metadata?.agentId as string) === agentId)
           .slice(0, limit)

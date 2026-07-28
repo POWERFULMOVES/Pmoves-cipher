@@ -22,10 +22,15 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
         return
       }
       const allTags = [category, ...tags].filter(Boolean)
+      // Spread custom metadata FIRST, then set category + agentId — prevents
+      // caller-supplied metadata.agentId from overriding the validated top-level agentId.
+      const safeMetadata = {...metadata}
+      delete safeMetadata.agentId
+      delete safeMetadata.category
       const created = await memoryManager.create({
         content,
         tags: allTags,
-        metadata: {category, agentId, ...metadata},
+        metadata: {...safeMetadata, category, agentId},
       })
 
       const embedding = await sidecar.embed(content)
@@ -116,6 +121,26 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
   router.delete('/memory/:id', async (req, res) => {
     try {
       const agentId = req.query.agentId ? String(req.query.agentId) : undefined
+      // Ownership check: fetch the memory first and verify it belongs to the
+      // requesting agent BEFORE deleting anything. Prevents an agent from
+      // deleting another agent's memory by guessing the id.
+      if (agentId) {
+        try {
+          const memory = await memoryManager.get(req.params.id)
+          const ownerAgentId = (memory.metadata?.agentId as string) ?? undefined
+          if (ownerAgentId && ownerAgentId !== agentId) {
+            res.status(403).json({error: `Memory ${req.params.id} belongs to agent '${ownerAgentId}', not '${agentId}'`})
+            return
+          }
+        } catch (checkErr) {
+          const msg = checkErr instanceof Error ? checkErr.message : String(checkErr)
+          if (/not found/i.test(msg)) {
+            res.status(404).json({error: 'Memory not found'})
+            return
+          }
+          throw checkErr
+        }
+      }
       await memoryManager.delete(req.params.id)
       await sidecar.deleteVector(req.params.id, agentId)
       res.status(204).end()
@@ -138,7 +163,10 @@ async function lexicalFallback(
   category?: string,
   agentId?: string,
 ): Promise<Array<{id: string; content: string; category: string; tags: string[]; agentId?: string; created_at: string}>> {
-  const memories = await memoryManager.list({limit: limit * 3})
+  // Load all memories (MemoryManager.list already loads from blob storage in full,
+  // then filters in-memory). We pass a high limit to avoid truncating before the
+  // agentId filter can exclude records from other agents. Filter FIRST, then slice.
+  const memories = await memoryManager.list({limit: 1000})
   const filtered = memories.filter((m) => {
     if (agentId && (m.metadata?.agentId as string) !== agentId) return false
     if (category && (m.metadata?.category as string) !== category && !(m.tags ?? []).includes(category)) return false
