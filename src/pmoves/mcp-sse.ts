@@ -9,6 +9,7 @@ import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
 import {getEmbeddingSidecar} from './embedding.js'
 import {getHiragClient} from './hirag-client.js'
+import {getGraphClient} from './graph.js'
 
 const TOOL_STORE = 'pmoves_cipher_store'
 const TOOL_SEARCH = 'pmoves_cipher_search'
@@ -17,6 +18,7 @@ const TOOL_REASONING_PATTERNS = 'pmoves_cipher_reasoning_patterns'
 const TOOL_SESSION_SAVE = 'pmoves_cipher_session_save'
 const TOOL_SESSION_RECALL = 'pmoves_cipher_session_recall'
 const TOOL_HYBRID_SEARCH = 'pmoves_cipher_hybrid_search'
+const TOOL_GRAPH_EXPAND = 'pmoves_cipher_graph_expand'
 
 const CATEGORIES = [
   'code_pattern',
@@ -164,6 +166,19 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
           required: ['query', 'agentId'],
         },
       },
+      {
+        name: TOOL_GRAPH_EXPAND,
+        description: 'Given a memory id, return its graph neighborhood (N-hop traversal via Neo4j). Discovers related memories that share categories, tags, or inferred relationships. Use after pmoves_cipher_search to find contextually connected memories the vector search missed.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            memoryId: {type: 'string', description: 'Memory id from a prior search result.'},
+            agentId: {type: 'string'},
+            maxDepth: {type: 'number', description: 'Max traversal depth (1-3). Default 2.', default: 2},
+          },
+          required: ['memoryId', 'agentId'],
+        },
+      },
     ],
   }))
 
@@ -182,6 +197,12 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
       const embedding = await sidecar.embed(content)
       if (embedding) await sidecar.storeVector(created.id, embedding, category, allTags, content, agentId)
       nats.emitStored(created.id, category, allTags)
+      // Graph: write memory node + background edge inference (fail-open)
+      const graph = getGraphClient()
+      if (graph) {
+        graph.writeMemory({id: created.id, agentId, category, tags: allTags, contentPreview: content.slice(0, 200), ts: new Date().toISOString()}).catch(() => {})
+        graph.inferEdges(created.id).catch(() => {})
+      }
       return {content: [{type: 'text', text: JSON.stringify({id: created.id, agentId, status: 'stored', embedded: !!embedding})}]}
     }
 
@@ -336,6 +357,17 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
 
       nats.emitSearched(query, fused.length, 'hybrid')
       return {content: [{type: 'text', text: JSON.stringify({results: fused, sources: {kb: hiragResults.length, cipher: cipherResults.length}})}]}
+    }
+
+    // ── TOOL_GRAPH_EXPAND ───────────────────────────────────────────────
+    if (name === TOOL_GRAPH_EXPAND) {
+      const {memoryId, agentId, maxDepth = 2} = args as {memoryId: string; agentId: string; maxDepth?: number}
+      const graph = getGraphClient()
+      if (!graph) {
+        return {content: [{type: 'text', text: JSON.stringify({error: 'Neo4j not available', center: null, neighbors: []})}]}
+      }
+      const neighborhood = await graph.expand(memoryId, Math.min(maxDepth, 3), agentId)
+      return {content: [{type: 'text', text: JSON.stringify(neighborhood)}]}
     }
 
     throw new Error(`Unknown tool: ${name}`)

@@ -102,7 +102,8 @@
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.24.6",
     "zustand": "^5.0.11",
-    "nats": "^2.29.0"
+    "nats": "^2.29.0",
+    "neo4j-driver": "^5.27.0"
   },
   "devDependencies": {
     "@eslint/compat": "^1",
