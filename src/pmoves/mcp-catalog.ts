@@ -1,16 +1,5 @@
 /**
  * PMOVES MCP Catalog Client — brokers the gateway-agent tool registry.
- *
- * Agents call pmoves_cipher_mcp_list to discover what MCP servers are available
- * before connecting directly. Cipher is the catalog, not the proxy.
- *
- * Sources (tried in order):
- *   1. gateway-agent HTTP API: GET http://gateway-agent:8111/tools
- *   2. Empty list (fail-open)
- *
- * Config (env):
- *   GATEWAY_AGENT_URL  — default http://gateway-agent:8111
- *   MCP_CATALOG_TTL    — cache TTL in seconds, default 300
  */
 
 export interface MCPRegistryEntry {
@@ -20,7 +9,7 @@ export interface MCPRegistryEntry {
   endpoint?: string
   args?: string[]
   env_required?: string[]
-  source: 'gateway-agent' | 'static'
+  source: string
 }
 
 const DEFAULT_GATEWAY_URL = process.env.GATEWAY_AGENT_URL ?? 'http://gateway-agent:8111'
@@ -51,11 +40,11 @@ class MCPCatalogClientImpl {
   }
 
   async refresh(): Promise<MCPRegistryEntry[]> {
-    this.fetching = this._doRefresh()
+    this.fetching = this.doRefresh()
     try { return await this.fetching } finally { this.fetching = null }
   }
 
-  private async _doRefresh(): Promise<MCPRegistryEntry[]> {
+  private async doRefresh(): Promise<MCPRegistryEntry[]> {
     const entries = await this.fetchFromGateway()
     this.cache = entries
     this.cacheTime = Date.now()
@@ -64,16 +53,16 @@ class MCPCatalogClientImpl {
 
   private async fetchFromGateway(): Promise<MCPRegistryEntry[]> {
     try {
-      const resp = await fetch(`${this.gatewayUrl}/tools`, {signal: AbortSignal.timeout(5000)})
-      if (!resp.ok) { process.stderr.write(`pmoves-catalog: gateway-agent returned ${resp.status}\n`); return [] }
+      const resp = await fetch(this.gatewayUrl + '/tools', {signal: AbortSignal.timeout(5000)})
+      if (!resp.ok) return []
       const data = await resp.json() as {tools?: Array<Record<string, unknown>>}
       const tools = data.tools ?? data
       if (!Array.isArray(tools)) return []
-      return tools.map((t) => this.normalizeEntry(t, 'gateway-agent'))
-    } catch (e) { process.stderr.write(`pmoves-catalog: gateway-agent unreachable — ${e}\n`); return [] }
+      return tools.map((t) => this.normalizeEntry(t))
+    } catch { return [] }
   }
 
-  private normalizeEntry(raw: Record<string, unknown>, source: 'gateway-agent' | 'static'): MCPRegistryEntry {
+  private normalizeEntry(raw: Record<string, unknown>): MCPRegistryEntry {
     return {
       name: String(raw.name ?? raw.tool_name ?? 'unknown'),
       description: String(raw.description ?? ''),
@@ -81,7 +70,7 @@ class MCPCatalogClientImpl {
       endpoint: raw.endpoint ? String(raw.endpoint) : raw.url ? String(raw.url) : raw.command ? String(raw.command) : undefined,
       args: Array.isArray(raw.args) ? (raw.args as string[]) : undefined,
       env_required: Array.isArray(raw.env_required) ? (raw.env_required as string[]) : undefined,
-      source,
+      source: 'gateway-agent',
     }
   }
 }
