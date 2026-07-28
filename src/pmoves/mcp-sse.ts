@@ -1,6 +1,5 @@
 import {Router} from 'express'
 import {Server} from '@modelcontextprotocol/sdk/server/index.js'
-import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js'
 import {SSEServerTransport} from '@modelcontextprotocol/sdk/server/sse.js'
 import {
   CallToolRequestSchema,
@@ -9,6 +8,7 @@ import {
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
 import {getEmbeddingSidecar} from './embedding.js'
+import {getHiragClient} from './hirag-client.js'
 
 const TOOL_STORE = 'pmoves_cipher_store'
 const TOOL_SEARCH = 'pmoves_cipher_search'
@@ -16,6 +16,7 @@ const TOOL_STORE_REASONING = 'pmoves_cipher_store_reasoning'
 const TOOL_REASONING_PATTERNS = 'pmoves_cipher_reasoning_patterns'
 const TOOL_SESSION_SAVE = 'pmoves_cipher_session_save'
 const TOOL_SESSION_RECALL = 'pmoves_cipher_session_recall'
+const TOOL_HYBRID_SEARCH = 'pmoves_cipher_hybrid_search'
 
 const CATEGORIES = [
   'code_pattern',
@@ -143,10 +144,24 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
           type: 'object',
           properties: {
             agentId: {type: 'string', description: 'Agent identifier (e.g. crush-spark).'},
-            query: {type: 'string', description: 'What you are looking for (e.g. "latest state of play", "cipher agent scope PR status", "archon dead-dir retire"). Defaults to "latest session" if omitted.'},
+            query: {type: 'string', description: 'What you are looking for (e.g. "latest state of play", "cipher agent scope PR status"). Defaults to "latest session" if omitted.'},
             limit: {type: 'number', description: 'Max checkpoints to return.', default: 3},
           },
           required: ['agentId'],
+        },
+      },
+      {
+        name: TOOL_HYBRID_SEARCH,
+        description: 'Hybrid search across both cipher memory (this agent\'s stored context) and the PMOVES knowledge base (Hi-RAG v2). Fuses results from Qdrant cipher collection + HiRAG\'s KB collection. Use this when you need both your own past notes AND project documentation in one query. Rerank uses GPU if available.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {type: 'string', description: 'Natural language search query.'},
+            agentId: {type: 'string', description: 'Agent identifier (scopes cipher memory search).'},
+            topK: {type: 'number', description: 'Results per source. Default 5 (10 total).', default: 5},
+            rerank: {type: 'boolean', description: 'Use cross-encoder rerank (GPU if available). Default true.', default: true},
+          },
+          required: ['query', 'agentId'],
         },
       },
     ],
@@ -155,40 +170,25 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const {name, arguments: args = {}} = request.params
 
+    // ── TOOL_STORE ──────────────────────────────────────────────────────
     if (name === TOOL_STORE) {
       const {content, category = 'context', tags = [], agentId} = args as {
-        content: string
-        category?: string
-        tags?: string[]
-        agentId?: string
+        content: string; category?: string; tags?: string[]; agentId?: string
       }
-      if (!agentId) {
-        throw new Error('agentId is required for pmoves_cipher_store')
-      }
+      if (!agentId) throw new Error('agentId is required for pmoves_cipher_store')
       const allTags = [category, ...tags].filter(Boolean)
-      const created = await memoryManager.create({
-        content,
-        tags: allTags,
-        metadata: {category, agentId},
-      })
+      const created = await memoryManager.create({content, tags: allTags, metadata: {category, agentId}})
       const sidecar = getEmbeddingSidecar()
       const embedding = await sidecar.embed(content)
-      if (embedding) {
-        await sidecar.storeVector(created.id, embedding, category, allTags, content, agentId)
-      }
+      if (embedding) await sidecar.storeVector(created.id, embedding, category, allTags, content, agentId)
       nats.emitStored(created.id, category, allTags)
-      return {
-        content: [{type: 'text', text: JSON.stringify({id: created.id, agentId, status: 'stored', embedded: !!embedding})}],
-      }
+      return {content: [{type: 'text', text: JSON.stringify({id: created.id, agentId, status: 'stored', embedded: !!embedding})}]}
     }
 
+    // ── TOOL_SEARCH ─────────────────────────────────────────────────────
     if (name === TOOL_SEARCH) {
       const {query, category, limit = 10, agentId} = args as {query: string; category?: string; limit?: number; agentId?: string}
-      if (!agentId) {
-        throw new Error('agentId is required for pmoves_cipher_search')
-      }
-      // Wildcard "*" means cross-agent search — omit agentId from Qdrant filter
-      // and metadata filter. Advisory mode only — token enforcement (PR 2) can override.
+      if (!agentId) throw new Error('agentId is required for pmoves_cipher_search')
       const scopedAgentId = agentId === '*' ? undefined : agentId
       const sidecar = getEmbeddingSidecar()
       const queryEmbedding = await sidecar.embed(query)
@@ -202,74 +202,40 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
               try {
                 const m = await memoryManager.get(hit.id)
                 return {id: m.id, content: m.content, category: (m.metadata?.category as string) ?? 'context', tags: m.tags ?? [], agentId: (m.metadata?.agentId as string) ?? 'unknown', score: hit.score}
-              } catch {
-                return null
-              }
+              } catch { return null }
             }),
           )
           results = memories.filter((m): m is NonNullable<typeof m> => m !== null)
         } else {
           const memories = await memoryManager.list({limit: 1000})
-          results = memories
-            .filter((m) => {
-              if (scopedAgentId && (m.metadata?.agentId as string) !== scopedAgentId) return false
-              if (category && (m.metadata?.category as string) !== category && !(m.tags ?? []).includes(category)) return false
-              return true
-            })
-            .map((m) => ({id: m.id, content: m.content, category: (m.metadata?.category as string) ?? 'context', tags: m.tags ?? [], agentId: (m.metadata?.agentId as string) ?? 'unknown'}))
+          results = memories.filter((m) => (!scopedAgentId || (m.metadata?.agentId as string) === scopedAgentId) && (!category || (m.metadata?.category as string) === category || (m.tags ?? []).includes(category))).slice(0, limit).map((m) => ({id: m.id, content: m.content, category: (m.metadata?.category as string) ?? 'context', tags: m.tags ?? [], agentId: (m.metadata?.agentId as string) ?? 'unknown'}))
         }
       } else {
         const memories = await memoryManager.list({limit: 1000})
-        results = memories
-          .filter((m) => {
-            if (scopedAgentId && (m.metadata?.agentId as string) !== scopedAgentId) return false
-            if (category && (m.metadata?.category as string) !== category && !(m.tags ?? []).includes(category)) return false
-            return true
-          })
-          .map((m) => ({id: m.id, content: m.content, category: (m.metadata?.category as string) ?? 'context', tags: m.tags ?? [], agentId: (m.metadata?.agentId as string) ?? 'unknown'}))
+        results = memories.filter((m) => (!scopedAgentId || (m.metadata?.agentId as string) === scopedAgentId) && (!category || (m.metadata?.category as string) === category || (m.tags ?? []).includes(category))).slice(0, limit).map((m) => ({id: m.id, content: m.content, category: (m.metadata?.category as string) ?? 'context', tags: m.tags ?? [], agentId: (m.metadata?.agentId as string) ?? 'unknown'}))
       }
       nats.emitSearched(query, results.length, category)
-      return {
-        content: [{type: 'text', text: JSON.stringify({results})}],
-      }
+      return {content: [{type: 'text', text: JSON.stringify({results})}]}
     }
 
+    // ── TOOL_STORE_REASONING ────────────────────────────────────────────
     if (name === TOOL_STORE_REASONING) {
-      const {question, reasoning, result, agentId} = args as {
-        question: string
-        reasoning: string
-        result: string
-        agentId?: string
-      }
-      if (!agentId) {
-        throw new Error('agentId is required for pmoves_cipher_store_reasoning')
-      }
+      const {question, reasoning, result, agentId} = args as {question: string; reasoning: string; result: string; agentId?: string}
+      if (!agentId) throw new Error('agentId is required for pmoves_cipher_store_reasoning')
       const content = `Q: ${question}\n\nReasoning:\n${reasoning}\n\nResult:\n${result}`
-      const created = await memoryManager.create({
-        content,
-        tags: ['reasoning'],
-        metadata: {category: 'reasoning', question, agentId},
-      })
-      // Store reasoning in Qdrant too (dense + BM25) for semantic search across reasoning traces
+      const created = await memoryManager.create({content, tags: ['reasoning'], metadata: {category: 'reasoning', question, agentId}})
       const sidecar = getEmbeddingSidecar()
       const embedding = await sidecar.embed(content)
-      if (embedding) {
-        await sidecar.storeVector(created.id, embedding, 'reasoning', ['reasoning'], content, agentId)
-      }
+      if (embedding) await sidecar.storeVector(created.id, embedding, 'reasoning', ['reasoning'], content, agentId)
       nats.emitReasoningStored(created.id, question.slice(0, 200))
-      return {
-        content: [{type: 'text', text: JSON.stringify({id: created.id, agentId, status: 'stored', embedded: !!embedding})}],
-      }
+      return {content: [{type: 'text', text: JSON.stringify({id: created.id, agentId, status: 'stored', embedded: !!embedding})}]}
     }
 
+    // ── TOOL_REASONING_PATTERNS ─────────────────────────────────────────
     if (name === TOOL_REASONING_PATTERNS) {
       const {query, limit = 5, agentId} = args as {query: string; limit?: number; agentId?: string}
-      if (!agentId) {
-        throw new Error('agentId is required for pmoves_cipher_reasoning_patterns')
-      }
-      // Wildcard cross-agent search
+      if (!agentId) throw new Error('agentId is required for pmoves_cipher_reasoning_patterns')
       const scopedAgentId = agentId === '*' ? undefined : agentId
-      // Use semantic search via Qdrant first (dense + BM25 hybrid), fall back to lexical list
       const sidecar = getEmbeddingSidecar()
       const queryEmbedding = await sidecar.embed(query)
       let results: Array<{id: string; content: string; category: string; agentId?: string; score?: number}>
@@ -282,65 +248,37 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
               try {
                 const m = await memoryManager.get(hit.id)
                 return {id: m.id, content: m.content, category: 'reasoning', agentId: (m.metadata?.agentId as string) ?? 'unknown', score: hit.score}
-              } catch {
-                return null
-              }
+              } catch { return null }
             }),
           )
           results = memories.filter((m): m is NonNullable<typeof m> => m !== null)
-        } else {
-          const memories = await memoryManager.list({limit: 1000, tags: ['reasoning']})
-          results = memories
-            .filter((m) => !scopedAgentId || (m.metadata?.agentId as string) === scopedAgentId)
-            .map((m) => ({id: m.id, content: m.content, category: 'reasoning', agentId: (m.metadata?.agentId as string) ?? 'unknown'}))
-        }
-      } else {
-        const memories = await memoryManager.list({
-          limit: Math.min(limit, 20),
-          tags: ['reasoning'],
-        })
-        results = memories
-          .filter((m) => !scopedAgentId || (m.metadata?.agentId as string) === scopedAgentId)
-          .map((m) => ({
-            id: m.id,
-            content: m.content,
-            category: 'reasoning',
-            agentId: (m.metadata?.agentId as string) ?? 'unknown',
-          }))
+        } else { results = [] }
+      } else { results = [] }
+
+      if (results.length === 0) {
+        const memories = await memoryManager.list({limit: 1000, tags: ['reasoning']})
+        results = memories.filter((m) => !scopedAgentId || (m.metadata?.agentId as string) === scopedAgentId).slice(0, limit).map((m) => ({id: m.id, content: m.content, category: 'reasoning', agentId: (m.metadata?.agentId as string) ?? 'unknown'}))
       }
       nats.emitSearched(query, results.length, 'reasoning')
-      return {
-        content: [{type: 'text', text: JSON.stringify({results})}],
-      }
+      return {content: [{type: 'text', text: JSON.stringify({results})}]}
     }
 
+    // ── TOOL_SESSION_SAVE ───────────────────────────────────────────────
     if (name === TOOL_SESSION_SAVE) {
       const {summary, agentId, harness = 'unknown', model = 'unknown', contextPaths = [], activeLanes = []} = args as {
-        summary: string
-        agentId: string
-        harness?: string
-        model?: string
-        contextPaths?: string[]
-        activeLanes?: string[]
+        summary: string; agentId: string; harness?: string; model?: string; contextPaths?: string[]; activeLanes?: string[]
       }
       const ts = new Date().toISOString()
       const enrichedContent = `[${ts}] ${agentId} (${harness}/${model})\n\n${summary}\n\nActive lanes: ${activeLanes.join(', ') || 'none'}\nContext: ${contextPaths.join(', ') || 'none'}`
-      const created = await memoryManager.create({
-        content: enrichedContent,
-        tags: ['agent_checkpoint'],
-        metadata: {category: 'agent_checkpoint', agentId, harness, model, ts, contextPaths, activeLanes},
-      })
+      const created = await memoryManager.create({content: enrichedContent, tags: ['agent_checkpoint'], metadata: {category: 'agent_checkpoint', agentId, harness, model, ts, contextPaths, activeLanes}})
       const sidecar = getEmbeddingSidecar()
       const embedding = await sidecar.embed(enrichedContent)
-      if (embedding) {
-        await sidecar.storeVector(created.id, embedding, 'agent_checkpoint', ['agent_checkpoint'], enrichedContent, agentId)
-      }
+      if (embedding) await sidecar.storeVector(created.id, embedding, 'agent_checkpoint', ['agent_checkpoint'], enrichedContent, agentId)
       nats.emitStored(created.id, 'agent_checkpoint', ['agent_checkpoint'])
-      return {
-        content: [{type: 'text', text: JSON.stringify({id: created.id, agentId, status: 'checkpoint_saved', embedded: !!embedding, ts})}],
-      }
+      return {content: [{type: 'text', text: JSON.stringify({id: created.id, agentId, status: 'checkpoint_saved', embedded: !!embedding, ts})}]}
     }
 
+    // ── TOOL_SESSION_RECALL ─────────────────────────────────────────────
     if (name === TOOL_SESSION_RECALL) {
       const {agentId, query = 'latest session', limit = 3} = args as {agentId: string; query?: string; limit?: number}
       const sidecar = getEmbeddingSidecar()
@@ -354,49 +292,50 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
             vectorHits.map(async (hit) => {
               try {
                 const m = await memoryManager.get(hit.id)
-                return {
-                  id: m.id,
-                  content: m.content,
-                  ts: (m.metadata?.ts as string) ?? new Date(m.createdAt).toISOString(),
-                  harness: (m.metadata?.harness as string) ?? 'unknown',
-                  model: (m.metadata?.model as string) ?? 'unknown',
-                  activeLanes: (m.metadata?.activeLanes as string[]) ?? [],
-                  score: hit.score,
-                }
-              } catch {
-                return null
-              }
+                return {id: m.id, content: m.content, ts: (m.metadata?.ts as string) ?? new Date(m.createdAt).toISOString(), harness: (m.metadata?.harness as string) ?? 'unknown', model: (m.metadata?.model as string) ?? 'unknown', activeLanes: (m.metadata?.activeLanes as string[]) ?? [], score: hit.score}
+              } catch { return null }
             }),
           )
           results = memories.filter((m): m is NonNullable<typeof m> => m !== null)
-        } else {
-          results = []
-        }
-      } else {
-        results = []
-      }
+        } else { results = [] }
+      } else { results = [] }
 
-      // If no semantic hits, fall back to most recent checkpoint for this agent
       if (results.length === 0) {
         const memories = await memoryManager.list({limit: 1000, tags: ['agent_checkpoint']})
-        results = memories
-          .filter((m) => (m.metadata?.agentId as string) === agentId)
-          .slice(0, limit)
-          .map((m) => ({
-            id: m.id,
-            content: m.content,
-            ts: (m.metadata?.ts as string) ?? new Date(m.createdAt).toISOString(),
-            harness: (m.metadata?.harness as string) ?? 'unknown',
-            model: (m.metadata?.model as string) ?? 'unknown',
-            activeLanes: (m.metadata?.activeLanes as string[]) ?? [],
-          }))
+        results = memories.filter((m) => (m.metadata?.agentId as string) === agentId).slice(0, limit).map((m) => ({id: m.id, content: m.content, ts: (m.metadata?.ts as string) ?? new Date(m.createdAt).toISOString(), harness: (m.metadata?.harness as string) ?? 'unknown', model: (m.metadata?.model as string) ?? 'unknown', activeLanes: (m.metadata?.activeLanes as string[]) ?? []}))
       }
-
       nats.emitSearched(query, results.length, 'agent_checkpoint')
-      const hasHit = results.length > 0
-      return {
-        content: [{type: 'text', text: JSON.stringify({agentId, hasCheckpoint: hasHit, results})}],
-      }
+      return {content: [{type: 'text', text: JSON.stringify({agentId, hasCheckpoint: results.length > 0, results})}]}
+    }
+
+    // ── TOOL_HYBRID_SEARCH ──────────────────────────────────────────────
+    if (name === TOOL_HYBRID_SEARCH) {
+      const {query, agentId, topK = 5, rerank = true} = args as {query: string; agentId: string; topK?: number; rerank?: boolean}
+      const hirag = getHiragClient()
+      const sidecar = getEmbeddingSidecar()
+      const queryEmbedding = await sidecar.embed(query)
+
+      const [hiragResults, cipherResults] = await Promise.all([
+        hirag.query({query, topK, rerank}),
+        (async () => {
+          if (!queryEmbedding) return []
+          const hits = await sidecar.search(queryEmbedding, query, topK, undefined, agentId)
+          return Promise.all(hits.map(async (h) => {
+            try {
+              const m = await memoryManager.get(h.id)
+              return {content: m.content, score: h.score, collection: 'cipher_memory', source: 'cipher', metadata: {agentId, category: m.metadata?.category, id: m.id}}
+            } catch { return null }
+          })).then((rs) => rs.filter((r): r is NonNullable<typeof r> => r !== null))
+        })(),
+      ])
+
+      const fused = [
+        ...hiragResults.map((r) => ({...r, source: 'kb'})),
+        ...cipherResults.map((r) => ({...r, source: 'cipher_memory'})),
+      ].sort((a, b) => b.score - a.score)
+
+      nats.emitSearched(query, fused.length, 'hybrid')
+      return {content: [{type: 'text', text: JSON.stringify({results: fused, sources: {kb: hiragResults.length, cipher: cipherResults.length}})}]}
     }
 
     throw new Error(`Unknown tool: ${name}`)
