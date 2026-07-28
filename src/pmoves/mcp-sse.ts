@@ -10,6 +10,7 @@ import type {PmovesNatsEmitter} from './nats-emitter.js'
 import {getEmbeddingSidecar} from './embedding.js'
 import {getHiragClient} from './hirag-client.js'
 import {getGraphClient} from './graph.js'
+import {getMCPCatalogClient} from './mcp-catalog.js'
 
 const TOOL_STORE = 'pmoves_cipher_store'
 const TOOL_SEARCH = 'pmoves_cipher_search'
@@ -19,6 +20,8 @@ const TOOL_SESSION_SAVE = 'pmoves_cipher_session_save'
 const TOOL_SESSION_RECALL = 'pmoves_cipher_session_recall'
 const TOOL_HYBRID_SEARCH = 'pmoves_cipher_hybrid_search'
 const TOOL_GRAPH_EXPAND = 'pmoves_cipher_graph_expand'
+const TOOL_MCP_LIST = 'pmoves_cipher_mcp_list'
+const TOOL_MCP_GET = 'pmoves_cipher_mcp_get'
 
 const CATEGORIES = [
   'code_pattern',
@@ -177,6 +180,30 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
             maxDepth: {type: 'number', description: 'Max traversal depth (1-3). Default 2.', default: 2},
           },
           required: ['memoryId', 'agentId'],
+        },
+      },
+      {
+        name: TOOL_MCP_LIST,
+        description: 'List available MCP servers from the gateway-agent tool registry.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: {type: 'string'},
+            transport: {type: 'string', enum: ['stdio', 'sse', 'http']},
+          },
+          required: ['agentId'],
+        },
+      },
+      {
+        name: TOOL_MCP_GET,
+        description: 'Get detailed configuration for one MCP server from the gateway-agent registry.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {type: 'string'},
+            agentId: {type: 'string'},
+          },
+          required: ['name', 'agentId'],
         },
       },
     ],
@@ -368,6 +395,25 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter): 
       }
       const neighborhood = await graph.expand(memoryId, Math.min(maxDepth, 3), agentId)
       return {content: [{type: 'text', text: JSON.stringify(neighborhood)}]}
+    }
+
+
+    // ── TOOL_MCP_LIST ──
+    if (name === TOOL_MCP_LIST) {
+      const {transport} = args as {transport?: string}
+      const catalog = getMCPCatalogClient()
+      const entries = await catalog.list()
+      const filtered = transport ? entries.filter((e) => e.transport === transport) : entries
+      return {content: [{type: 'text', text: JSON.stringify({mcpServers: filtered, count: filtered.length})}]}
+    }
+
+    // ── TOOL_MCP_GET ──
+    if (name === TOOL_MCP_GET) {
+      const {name: mcpName} = args as {name: string}
+      const catalog = getMCPCatalogClient()
+      const entry = await catalog.get(mcpName)
+      if (!entry) return {content: [{type: 'text', text: JSON.stringify({error: 'Not found', name: mcpName})}]}
+      return {content: [{type: 'text', text: JSON.stringify(entry)}]}
     }
 
     throw new Error(`Unknown tool: ${name}`)
