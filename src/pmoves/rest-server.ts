@@ -1,26 +1,27 @@
 import express from 'express'
+
 import {createBlobStorage} from '../agent/infra/blob/blob-storage-factory.js'
 import {MemoryManager} from '../agent/infra/memory/memory-manager.js'
+import {createA2ARouter} from './a2a.js'
 import {createPmovesAuthMiddleware} from './auth.js'
 import {createHealthRouter} from './health.js'
-import {createMemoryRoutes} from './memory-routes.js'
 import {createMcpSseRouter} from './mcp-sse.js'
-import {createA2ARouter} from './a2a.js'
+import {createMemoryRoutes} from './memory-routes.js'
 import {createNatsEmitter, type PmovesNatsEmitter} from './nats-emitter.js'
 
 const DEFAULT_PORT = 8105
 const DEFAULT_HOST = '0.0.0.0'
 
-function parseArgs(): {port: number; host: string} {
+function parseArgs(): {host: string; port: number;} {
   const args = process.argv.slice(2)
   const port = Number(args[args.indexOf('--port') + 1] ?? process.env.PMOVES_PORT ?? DEFAULT_PORT)
   const hostIdx = args.indexOf('--host')
-  const host = hostIdx >= 0 ? args[hostIdx + 1] : process.env.PMOVES_HOST ?? DEFAULT_HOST
-  return {port, host}
+  const host = hostIdx === -1 ? process.env.PMOVES_HOST ?? DEFAULT_HOST : args[hostIdx + 1]
+  return {host, port}
 }
 
 async function main(): Promise<void> {
-  const {port, host} = parseArgs()
+  const {host, port} = parseArgs()
   const natsUrl = process.env.NATS_URL ?? ''
   const storageDir = process.env.PMOVES_STORAGE_DIR
   const useInMemory = !storageDir
@@ -41,6 +42,15 @@ async function main(): Promise<void> {
   }
 
   const app = express()
+
+  // MCP /messages POST must bypass express.json() — the MCP SDK's
+  // SSEServerTransport.handlePostMessage() reads the raw body stream itself.
+  // If express.json() runs first, the stream is consumed → "stream is not readable" → 400.
+  app.use('/mcp', (req, res, next) => {
+    const router = createMcpSseRouter(memoryManager, nats, {agentId: req.agentId, scopes: req.scopes})
+    return router(req, res, next)
+  })
+
   app.use(express.json({limit: '5mb'}))
 
   app.use(createHealthRouter())
@@ -50,7 +60,6 @@ async function main(): Promise<void> {
     return createPmovesAuthMiddleware()(req, res, next)
   })
   app.use('/api', createMemoryRoutes(memoryManager, nats))
-  app.use('/mcp', createMcpSseRouter(memoryManager, nats))
 
   return new Promise((resolve) => {
     const server = app.listen(port, host, () => {
@@ -61,12 +70,15 @@ async function main(): Promise<void> {
       await nats.close()
       resolve()
     }
+
     process.on('SIGTERM', shutdown)
     process.on('SIGINT', shutdown)
   })
 }
 
-main().catch((error) => {
+try {
+  await main()
+} catch (error) {
   process.stderr.write(`pmoves-cipher-shim fatal: ${error}\n`)
-  process.exit(1)
-})
+  process.exitCode = 1
+}
