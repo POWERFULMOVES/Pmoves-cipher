@@ -71,7 +71,9 @@ async function main(): Promise<void> {
   })
 }
 
-main().catch((error) => {
+try {
+  await main()
+} catch (error) {
   process.stderr.write(`pmoves-cipher-shim fatal: ${error}\n`)
-  process.exit(1)
-})
+  process.exitCode = 1
+}

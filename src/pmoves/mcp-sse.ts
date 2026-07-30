@@ -45,6 +45,7 @@ const CATEGORIES = [
 ]
 
 export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Router {
+  // eslint-disable-next-line new-cap -- express Router() is designed to be called without new
   const router = Router()
   const transports = new Map<string, SSEServerTransport>()
 
@@ -73,18 +74,18 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
   return router
 }
 
-function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Server {
+function assertAgentId(auth: McpAuthContext, argsAgentId?: string, requiredScope?: string): void {
   const {agentId: authAgentId, scopes: authScopes = []} = auth
-
-  function assertAgentId(argsAgentId?: string, requiredScope?: string): void {
-    if (authAgentId && argsAgentId !== authAgentId) {
-      throw new Error(`Forbidden: token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`)
-    }
-
-    if (requiredScope && authAgentId && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
-      throw new Error(`Forbidden: missing required scope '${requiredScope}'`)
-    }
+  if (authAgentId && argsAgentId !== authAgentId) {
+    throw new Error(`Forbidden: token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`)
   }
+
+  if (requiredScope && authAgentId && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
+    throw new Error(`Forbidden: missing required scope '${requiredScope}'`)
+  }
+}
+
+function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Server {
 
   const server = new Server(
     {name: 'pmoves-cipher', version: '0.1.0'},
@@ -234,7 +235,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, a
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const {arguments: args = {}, name} = request.params
     const argsAgentId = (args as {agentId?: string}).agentId
-    if (argsAgentId) assertAgentId(argsAgentId)
+    if (argsAgentId) assertAgentId(auth, argsAgentId)
 
     // ── TOOL_STORE ──────────────────────────────────────────────────────
     if (name === TOOL_STORE) {
