@@ -1,7 +1,10 @@
-import {Router} from 'express'
+import express, {Router} from 'express'
+
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
+
 import {getEmbeddingSidecar} from './embedding.js'
+import './auth.js'
 
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 100
@@ -10,17 +13,36 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
   const router = Router()
   const sidecar = getEmbeddingSidecar()
 
+  function assertAgentId(req: express.Request, argsAgentId?: string, allowWildcard = false): void {
+    const authAgentId = req.agentId
+    if (!authAgentId) return // dev-skip / advisory mode
+    if (!argsAgentId) {
+      throw new Error('agentId is required when a token is present')
+    }
+
+    if (allowWildcard && argsAgentId === '*') {
+      throw new Error('Forbidden: cross-agent wildcard search is not allowed in token enforcement mode')
+    }
+
+    if (argsAgentId !== authAgentId) {
+      throw new Error(`Forbidden: token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`)
+    }
+  }
+
   router.post('/memory', async (req, res) => {
     try {
-      const {content, category = 'context', tags = [], metadata = {}, agentId} = req.body ?? {}
+      const {agentId, category = 'context', content, metadata = {}, tags = []} = req.body ?? {}
       if (!content || typeof content !== 'string') {
         res.status(400).json({error: 'content is required and must be a string'})
         return
       }
+
       if (!agentId || typeof agentId !== 'string') {
         res.status(400).json({error: 'agentId is required for per-agent scope'})
         return
       }
+
+      assertAgentId(req, agentId)
       const allTags = [category, ...tags].filter(Boolean)
       // Spread custom metadata FIRST, then set category + agentId — prevents
       // caller-supplied metadata.agentId from overriding the validated top-level agentId.
@@ -29,8 +51,8 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
       delete safeMetadata.category
       const created = await memoryManager.create({
         content,
+        metadata: {...safeMetadata, agentId, category},
         tags: allTags,
-        metadata: {...safeMetadata, category, agentId},
       })
 
       const embedding = await sidecar.embed(content)
@@ -39,9 +61,20 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
       }
 
       nats.emitStored(created.id, category, allTags)
-      res.status(201).json({id: created.id, agentId, embedding_id: embedding ? created.id : null})
+      res.status(201).json({agentId, embedding_id: embedding ? created.id : null, id: created.id})
     } catch (error) {
-      res.status(500).json({error: error instanceof Error ? error.message : String(error)})
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.startsWith('Forbidden:')) {
+        res.status(403).json({error: message})
+        return
+      }
+
+      if (/agentId is required when a token is present/.test(message)) {
+        res.status(400).json({error: message})
+        return
+      }
+
+      res.status(500).json({error: message})
     }
   })
 
@@ -52,14 +85,16 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
         res.status(400).json({error: 'q query parameter is required'})
         return
       }
+
       const limit = Math.min(Math.max(Number(req.query.limit ?? DEFAULT_LIMIT) || DEFAULT_LIMIT, 1), MAX_LIMIT)
       const category = req.query.category ? String(req.query.category) : undefined
       // agentId query param scopes search. Use "*" for cross-agent (advisory).
       const agentIdRaw = req.query.agentId ? String(req.query.agentId) : undefined
       const scopedAgentId = agentIdRaw && agentIdRaw !== '*' ? agentIdRaw : undefined
+      assertAgentId(req, agentIdRaw, true)
 
       const queryEmbedding = await sidecar.embed(q)
-      let results: Array<{id: string; content: string; category: string; tags: string[]; agentId?: string; created_at: string; score?: number}>
+      let results: Array<{agentId?: string; category: string; content: string; created_at: string; id: string; score?: number; tags: string[];}>
 
       if (queryEmbedding) {
         const vectorHits = await sidecar.search(queryEmbedding, q, limit, category, scopedAgentId)
@@ -69,13 +104,13 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
               try {
                 const m = await memoryManager.get(hit.id)
                 return {
-                  id: m.id,
-                  content: m.content,
-                  category: (m.metadata?.category as string) ?? 'context',
-                  tags: m.tags ?? [],
                   agentId: (m.metadata?.agentId as string) ?? 'unknown',
+                  category: (m.metadata?.category as string) ?? 'context',
+                  content: m.content,
                   created_at: new Date(m.createdAt).toISOString(),
+                  id: m.id,
                   score: hit.score,
+                  tags: m.tags ?? [],
                 }
               } catch {
                 return null
@@ -93,7 +128,18 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
       nats.emitSearched(q, results.length, category)
       res.json({results})
     } catch (error) {
-      res.status(500).json({error: error instanceof Error ? error.message : String(error)})
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.startsWith('Forbidden:')) {
+        res.status(403).json({error: message})
+        return
+      }
+
+      if (/agentId is required when a token is present/.test(message)) {
+        res.status(400).json({error: message})
+        return
+      }
+
+      res.status(500).json({error: message})
     }
   })
 
@@ -101,12 +147,12 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
     try {
       const memory = await memoryManager.get(req.params.id)
       res.json({
-        id: memory.id,
-        content: memory.content,
-        category: (memory.metadata?.category as string) ?? 'context',
-        tags: memory.tags ?? [],
         agentId: (memory.metadata?.agentId as string) ?? 'unknown',
+        category: (memory.metadata?.category as string) ?? 'context',
+        content: memory.content,
         created_at: new Date(memory.createdAt).toISOString(),
+        id: memory.id,
+        tags: memory.tags ?? [],
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -114,6 +160,7 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
         res.status(404).json({error: 'Memory not found'})
         return
       }
+
       res.status(500).json({error: message})
     }
   })
@@ -121,6 +168,7 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
   router.delete('/memory/:id', async (req, res) => {
     try {
       const agentId = req.query.agentId ? String(req.query.agentId) : undefined
+      assertAgentId(req, agentId)
       // Ownership check: fetch the memory first and verify it belongs to the
       // requesting agent BEFORE deleting anything. Prevents an agent from
       // deleting another agent's memory by guessing the id.
@@ -132,15 +180,17 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
             res.status(403).json({error: `Memory ${req.params.id} belongs to agent '${ownerAgentId}', not '${agentId}'`})
             return
           }
-        } catch (checkErr) {
-          const msg = checkErr instanceof Error ? checkErr.message : String(checkErr)
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error)
           if (/not found/i.test(msg)) {
             res.status(404).json({error: 'Memory not found'})
             return
           }
-          throw checkErr
+
+          throw error
         }
       }
+
       await memoryManager.delete(req.params.id)
       await sidecar.deleteVector(req.params.id, agentId)
       res.status(204).end()
@@ -150,6 +200,17 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
         res.status(404).json({error: 'Memory not found'})
         return
       }
+
+      if (message.startsWith('Forbidden:')) {
+        res.status(403).json({error: message})
+        return
+      }
+
+      if (/agentId is required when a token is present/.test(message)) {
+        res.status(400).json({error: message})
+        return
+      }
+
       res.status(500).json({error: message})
     }
   })
@@ -162,7 +223,7 @@ async function lexicalFallback(
   limit: number,
   category?: string,
   agentId?: string,
-): Promise<Array<{id: string; content: string; category: string; tags: string[]; agentId?: string; created_at: string}>> {
+): Promise<Array<{agentId?: string; category: string; content: string; created_at: string; id: string; tags: string[];}>> {
   // Load all memories (MemoryManager.list already loads from blob storage in full,
   // then filters in-memory). We pass a high limit to avoid truncating before the
   // agentId filter can exclude records from other agents. Filter FIRST, then slice.
@@ -173,11 +234,11 @@ async function lexicalFallback(
     return true
   })
   return filtered.slice(0, limit).map((m) => ({
-    id: m.id,
-    content: m.content,
-    category: (m.metadata?.category as string) ?? 'context',
-    tags: m.tags ?? [],
     agentId: (m.metadata?.agentId as string) ?? 'unknown',
+    category: (m.metadata?.category as string) ?? 'context',
+    content: m.content,
     created_at: new Date(m.createdAt).toISOString(),
+    id: m.id,
+    tags: m.tags ?? [],
   }))
 }
