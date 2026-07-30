@@ -43,22 +43,21 @@ async function main(): Promise<void> {
 
   const app = express()
 
-  // MCP /messages POST must bypass express.json() — the MCP SDK's
-  // SSEServerTransport.handlePostMessage() reads the raw body stream itself.
-  // If express.json() runs first, the stream is consumed → "stream is not readable" → 400.
-  app.use('/mcp', (req, res, next) => {
-    const router = createMcpSseRouter(memoryManager, nats, {agentId: req.agentId, scopes: req.scopes})
-    return router(req, res, next)
-  })
-
-  app.use(express.json({limit: '5mb'}))
-
   app.use(createHealthRouter())
   app.use(createA2ARouter())
   app.use((req, res, next) => {
     if (req.path === '/health' || req.path === '/healthz') return next()
     return createPmovesAuthMiddleware()(req, res, next)
   })
+
+  // MCP /messages POST must bypass express.json() — the MCP SDK's
+  // SSEServerTransport.handlePostMessage() reads the raw body stream itself.
+  // Auth middleware runs FIRST (reads headers only, never body), then /mcp
+  // gets the raw stream + req.agentId for enforcement. Router created ONCE
+  // so the internal transports Map persists across SSE + POST requests.
+  app.use('/mcp', createMcpSseRouter(memoryManager, nats))
+
+  app.use(express.json({limit: '5mb'}))
   app.use('/api', createMemoryRoutes(memoryManager, nats))
 
   return new Promise((resolve) => {
