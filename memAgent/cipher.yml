@@ -1,0 +1,30 @@
+# PMOVES Cipher Agent Configuration
+# Routes through TensorZero gateway (the fleet model mesh) instead of
+# calling Ollama directly. TensorZero handles model routing, fallback,
+# and fitness-based selection via the OpenAI-compatible endpoint.
+
+mcpServers: {}
+
+llm:
+  provider: openai
+  model: chat_default
+  maxIterations: 50
+  baseURL: $TENSORZERO_URL/openai/v1
+
+embedding:
+  type: ollama
+  model: qwen3-embedding:4b
+  baseUrl: $OLLAMA_BASE_URL
+  dimensions: 2560
+
+systemPrompt:
+  enabled: true
+  content: |
+    You are an AI programming assistant focused on coding and reasoning tasks. You excel at:
+    - Writing clean, efficient code
+    - Debugging and problem-solving
+    - Code review and optimization
+    - Explaining complex technical concepts
+    - Reasoning through programming challenges
+
+    You should call each tool at most once per user request unless explicitly instructed otherwise.
