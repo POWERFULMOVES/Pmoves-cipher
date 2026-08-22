@@ -9,7 +9,7 @@
  * never fail due to embedding infrastructure being down.
  *
  * Config (env):
- *   TENSORZERO_URL       — default http://tensorzero-gateway:3030
+ *   TENSORZERO_URL       — default http://tensorzero-gateway:3000
  *   QDRANT_URL           — default http://qdrant:6333
  *   QDRANT_API_KEY       — optional (if Qdrant requires auth)
  *   QDRANT_COLLECTION    — default pmoves_cipher_memory
@@ -19,7 +19,7 @@
 
 import { randomUUID } from 'node:crypto'
 
-const DEFAULT_TENSORZERO_URL = process.env.TENSORZERO_URL ?? 'http://tensorzero-gateway:3030'
+const DEFAULT_TENSORZERO_URL = process.env.TENSORZERO_URL ?? 'http://tensorzero-gateway:3000'
 const DEFAULT_QDRANT_URL = process.env.QDRANT_URL ?? 'http://qdrant:6333'
 const DEFAULT_QDRANT_COLLECTION = process.env.QDRANT_COLLECTION ?? 'pmoves_cipher_memory'
 const DEFAULT_EMBEDDING_MODEL = process.env.EMBEDDING_MODEL ?? 'tensorzero::embedding_model_name::qwen3_embedding_4b_local'
