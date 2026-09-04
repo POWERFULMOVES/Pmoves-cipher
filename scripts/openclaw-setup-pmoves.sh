@@ -8,6 +8,10 @@
 # agents — instead of the ByteRover cloud service. This is why the fork exists:
 # to customize claws and agents.
 #
+# MCP transport: registers the streamable-http endpoint (…/mcp) — the modern
+# transport A0 mounts since cipher #17 / PMOVES.AI #2923. The legacy SSE stream
+# (…/mcp/sse) remains available for SSE consumers.
+#
 # Configures PMOVES Cipher as long-term memory for OpenClaw agents:
 #   - Automatic Memory Flush (context compaction, storing to cipher-api)
 #   - Cipher MCP/SSE registration in openclaw.json (no cloud plugin)
@@ -119,10 +123,10 @@ backup_config() {
 
 # ─── Config Patching (Node.js) ───────────────────────────────────────────────
 
-# Registers the cipher-api SSE MCP server in openclaw.json (idempotent).
+# Registers the cipher-api streamable-http MCP server in openclaw.json (idempotent).
 # This is the PMOVES replacement for the upstream @byterover/byterover
 # contextEngine plugin: the memory context arrives through the same
-# SSE MCP transport every PMOVES agent already uses (.claude/mcp.json shape).
+# streamable-http MCP transport A0 mounts since cipher #17 / PMOVES.AI #2923.
 patch_cipher_mcp_config() {
   CIPHER_URL="$CIPHER_URL" CIPHER_TOKEN="${CIPHER_TOKEN:-}" CONFIG_PATH="$CONFIG_PATH" node -e '
     const fs = require("fs");
@@ -132,7 +136,7 @@ patch_cipher_mcp_config() {
     try {
         const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
         config.mcpServers = config.mcpServers || {};
-        const entry = { type: "sse", url: url + "/mcp/sse" };
+        const entry = { type: "streamable-http", url: url + "/mcp" };
         if (token) entry.headers = { Authorization: "Bearer " + token };
         config.mcpServers["pmoves-cipher"] = entry;
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
