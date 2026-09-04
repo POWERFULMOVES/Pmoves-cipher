@@ -44,7 +44,7 @@ class HiragClientImpl {
       const resp = await fetch(`${url}/hirag/query`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({query, top_k: topK, rerank}),
+        body: JSON.stringify({query, k: topK, use_rerank: rerank}),
         signal: AbortSignal.timeout(15000),
       })
       if (!resp.ok) {
