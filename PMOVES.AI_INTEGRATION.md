@@ -30,7 +30,7 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache, ...)
     │  direct import             │  HTTP                        │  HTTP
     ▼                            ▼                              ▼
 ┌──────────────────┐  ┌──────────────────┐    ┌──────────────────────────┐
-│  ByteRover v3.16 │  │  TensorZero :3030│    │  Qdrant :6333            │
+│  ByteRover v3.16 │  │  TensorZero :3000│    │  Qdrant :6333            │
 │  MemoryManager   │  │  (primary embed) │    │  pmoves_cipher_memory    │
 │  + FileBlobStorage│ │  qwen3_emb_4b    │    │  2560d / Cosine          │
 │  (filesystem)    │  │  2560d           │    │                          │
@@ -78,7 +78,7 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache, ...)
 
 ## Embedding Pipeline
 
-1. **Primary:** TensorZero `http://tensorzero-gateway:3030/openai/v1/embeddings` — model `tensorzero::embedding_model_name::qwen3_embedding_4b_local` (2560d)
+1. **Primary:** TensorZero `http://tensorzero-gateway:3000/openai/v1/embeddings` — model `tensorzero::embedding_model_name::qwen3_embedding_4b_local` (2560d)
 2. **Fallback:** Ollama `http://pmoves-ollama:11434/api/embed` — model `qwen3-embedding:4b` (2560d)
 3. **Vector store:** Qdrant `pmoves_cipher_memory` collection (2560d, Cosine) — auto-provisioned on first use
 4. **Fail-open:** If both TensorZero and Ollama are down, memory stores via ByteRover (no vector), search falls back to lexical list
@@ -96,7 +96,7 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache, ...)
 | `PMOVES_STORAGE_DIR` | `/data/cipher` | ByteRover FileBlobStorage root |
 | `PMOVES_PORT` | `8105` | Listen port |
 | `PMOVES_HOST` | `0.0.0.0` | Listen host |
-| `TENSORZERO_URL` | `http://tensorzero-gateway:3030` | Primary embedder |
+| `TENSORZERO_URL` | `http://tensorzero-gateway:3000` | Primary embedder |
 | `OLLAMA_URL` | `http://pmoves-ollama:11434` | Fallback embedder |
 | `OLLAMA_EMBED_MODEL` | `qwen3-embedding:4b` | Ollama embedding model |
 | `QDRANT_URL` | `http://qdrant:6333` | Vector store |
@@ -112,7 +112,7 @@ docker build -f Dockerfile.pmoves -t pmoves-cipher-api .
 docker run -p 8105:8105 \
   -e NATS_URL=nats://nats:4222 \
   -e CIPHER_API_TOKEN=secret \
-  -e TENSORZERO_URL=http://tensorzero-gateway:3030 \
+  -e TENSORZERO_URL=http://tensorzero-gateway:3000 \
   -e QDRANT_URL=http://qdrant:6333 \
   pmoves-cipher-api
 ```
