@@ -43,9 +43,16 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache)
 | 3 | `GET /api/memory/search?q=&limit=&category=` → `{results: [...]}` | semantic-cache, analyze_beats | `memory-routes.ts` |
 | 4 | `GET /api/memory/:id` | bridge (disabled) | `memory-routes.ts` |
 | 5 | `DELETE /api/memory/:id` | bridge (disabled) | `memory-routes.ts` |
-| 6 | `GET /mcp/sse` (MCP-over-SSE) | Claude Code, Agent Zero | `mcp-sse.ts` |
+| 6 | `GET /mcp/sse` (MCP-over-SSE, **legacy**) | legacy SSE clients | `mcp-sse.ts` |
 | 7 | Bearer auth via `CIPHER_API_TOKEN` | all callers | `auth.ts` |
-| 8 | `POST /mcp` (MCP-over-HTTP) | optional | `mcp-sse.ts` |
+| 8 | `POST /mcp` (MCP-over-HTTP, **stateless streamable-http — preferred**) | Agent Zero, deepseek-harness, Claude Code | `mcp-sse.ts` |
+
+> **Transport (updated 2026-09-04):** prefer the **streamable-http `POST /mcp`** endpoint.
+> It is stateless (`sessionIdGenerator: undefined`) — no in-memory session map, so it
+> cannot emit the "Unknown session" HTTP 400 the legacy SSE flow returns when a client's
+> stream and its message POST don't share one in-process transport (the failure Agent Zero
+> hit; it was moved onto `/mcp` in PMOVES.AI #2923). `GET /mcp/sse` + `POST /mcp/messages`
+> remain for back-compat. Both require `Authorization: Bearer ${CIPHER_API_TOKEN}`.
 
 ## NATS events emitted
 
