@@ -1,5 +1,6 @@
 import {Server} from '@modelcontextprotocol/sdk/server/index.js'
 import {SSEServerTransport} from '@modelcontextprotocol/sdk/server/sse.js'
+import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -69,6 +70,27 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
     }
 
     await transport.handlePostMessage(req, res)
+  })
+
+  // Stateless streamable-http (POST /mcp) — the modern MCP transport. Unlike the
+  // legacy SSE flow above, it keeps NO session map, so it cannot emit the
+  // "Unknown session" 400 that broke Agent Zero when the SSE stream and the
+  // message POST didn't share one in-process transport. Each request builds a
+  // fresh server + transport, handles the JSON-RPC message, and tears down on
+  // close. enableJsonResponse returns a plain JSON body (no SSE framing) for
+  // simple request/response clients.
+  router.post('/', async (req, res) => {
+    const server = buildMcpServer(memoryManager, nats)
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    })
+    res.on('close', () => {
+      void transport.close()
+      void server.close()
+    })
+    await server.connect(transport)
+    await transport.handleRequest(req, res, req.body)
   })
 
   return router
