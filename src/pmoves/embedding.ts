@@ -1,5 +1,5 @@
 /**
- * PMOVES Embedding Sidecar — TensorZero + Qdrant integration.
+ * PMOVES Embedding Sidecar - TensorZero + Qdrant integration.
  *
  * On POST /api/memory: embed content via TensorZero, store vector in Qdrant.
  * On GET /api/memory/search: vector similarity query against Qdrant.
@@ -9,12 +9,18 @@
  * never fail due to embedding infrastructure being down.
  *
  * Config (env):
- *   TENSORZERO_URL       — default http://tensorzero-gateway:3000
- *   QDRANT_URL           — default http://qdrant:6333
- *   QDRANT_API_KEY       — optional (if Qdrant requires auth)
- *   QDRANT_COLLECTION    — default pmoves_cipher_memory
- *   EMBEDDING_MODEL      — default tensorzero::embedding_model_name::qwen3_embedding_4b_local
- *   EMBEDDING_DIM        — default 2560
+ * Config (env):
+ *   TENSORZERO_URL       - default http://tensorzero-gateway:3000
+ *   QDRANT_URL           - default http://qdrant:6333
+ *   QDRANT_API_KEY       - optional (if Qdrant requires auth)
+ *   QDRANT_COLLECTION    - default pmoves_cipher_memory
+ *   EMBEDDING_MODEL      - default tensorzero::embedding_model_name::qwen3_embedding_4b_local
+ *   EMBEDDING_DIM        - default 2560
+ *   PMOVES_EMBED_TIMEOUT_MS - embed fetch budget, default 30000. Warm embed
+ *                         measures ~7.2s against the old 10s budget (see
+ *                         handoff embedding-model-routing-2026-09-02); 30s
+ *                         absorbs a post-restart model load.
+ */
  */
 
 import { randomUUID } from 'node:crypto'
@@ -27,6 +33,7 @@ const DEFAULT_EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM ?? 2560)
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY ?? ''
 const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://pmoves-ollama:11434'
 const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? 'qwen3-embedding:4b'
+const EMBED_TIMEOUT_MS = Number(process.env.PMOVES_EMBED_TIMEOUT_MS ?? 30000)
 
 // Named vector fields in the Qdrant collection.
 const DENSE_FIELD = 'dense'
@@ -70,7 +77,7 @@ class EmbeddingSidecar {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({model: this.embeddingModel, input: text}),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
       })
       if (!resp.ok) {
         process.stderr.write(`pmoves-embed: TensorZero returned ${resp.status}\n`)
@@ -82,7 +89,7 @@ class EmbeddingSidecar {
       }
       return {vector: data.data[0].embedding, dim: data.data[0].embedding.length}
     } catch (error) {
-      process.stderr.write(`pmoves-embed: TensorZero unreachable — trying Ollama fallback\n`)
+      process.stderr.write(`pmoves-embed: TensorZero unreachable - trying Ollama fallback\n`)
       return null
     }
   }
@@ -93,7 +100,7 @@ class EmbeddingSidecar {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({model: OLLAMA_EMBED_MODEL, input: text}),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
       })
       if (!resp.ok) {
         process.stderr.write(`pmoves-embed: Ollama returned ${resp.status}\n`)
@@ -105,7 +112,7 @@ class EmbeddingSidecar {
       }
       return {vector: data.embeddings[0], dim: data.embeddings[0].length}
     } catch (error) {
-      process.stderr.write(`pmoves-embed: Ollama unreachable — ${error}\n`)
+      process.stderr.write(`pmoves-embed: Ollama unreachable - ${error}\n`)
       return null
     }
   }
@@ -148,7 +155,7 @@ class EmbeddingSidecar {
       process.stderr.write(`pmoves-embed: Qdrant collection create failed ${createResp.status}\n`)
       return false
     } catch (error) {
-      process.stderr.write(`pmoves-embed: Qdrant unreachable — ${error}\n`)
+      process.stderr.write(`pmoves-embed: Qdrant unreachable - ${error}\n`)
       return false
     }
   }
@@ -184,7 +191,7 @@ class EmbeddingSidecar {
         process.stderr.write(`pmoves-embed: Qdrant store returned ${resp.status} for memory ${memoryId}: ${body}\n`)
       }
     } catch (error) {
-      process.stderr.write(`pmoves-embed: Qdrant store failed — ${error}\n`)
+      process.stderr.write(`pmoves-embed: Qdrant store failed - ${error}\n`)
     }
   }
 
@@ -241,7 +248,7 @@ class EmbeddingSidecar {
         .map((p) => ({id: p.payload?.memoryId ?? '', score: p.score}))
         .filter((r) => r.id)
     } catch (error) {
-      process.stderr.write(`pmoves-embed: Qdrant query failed — ${error}\n`)
+      process.stderr.write(`pmoves-embed: Qdrant query failed - ${error}\n`)
       return []
     }
   }
@@ -253,7 +260,7 @@ class EmbeddingSidecar {
       if (QDRANT_API_KEY) headers.Authorization = `Bearer ${QDRANT_API_KEY}`
 
       // Delete by payload filter (memoryId is stored in payload, not as point id).
-      // If agentId is provided, scope the delete to that agent (defensive — prevents
+      // If agentId is provided, scope the delete to that agent (defensive - prevents
       // a compromised agent from deleting another agent's memories by guessing ids).
       const must: Array<{key: string, match: {value: string}}> = [{key: 'memoryId', match: {value: memoryId}}]
       if (agentId) must.push({key: 'agentId', match: {value: agentId}})
@@ -266,7 +273,7 @@ class EmbeddingSidecar {
         signal: AbortSignal.timeout(5000),
       })
     } catch (error) {
-      process.stderr.write(`pmoves-embed: Qdrant delete failed — ${error}\n`)
+      process.stderr.write(`pmoves-embed: Qdrant delete failed - ${error}\n`)
     }
   }
 }
