@@ -18,8 +18,10 @@
 #   - Workspace protocol updates (AGENTS.md, TOOLS.md) with PMOVES endpoints
 #
 # Env overrides:
-#   CIPHER_URL      - default http://127.0.0.1:8105 (set to the tailnet IP/IP:port
-#                     of the node hosting cipher-api for remote agents)
+#   CIPHER_URL      - default http://127.0.0.1:8105 (for remote agents set it to
+#                     the TAILNET HOSTNAME of the node hosting cipher-api, e.g.
+#                     http://pmoves-b850-ai-top:8105 -- hostnames, never literal
+#                     IPs; MagicDNS names are stable, tailnet IPs rotate)
 #   CIPHER_TOKEN    - optional Authorization: Bearer <token> if cipher auth is on
 #   OPENCLAW_CONFIG - default $HOME/.openclaw/openclaw.json
 
@@ -78,6 +80,14 @@ cipher_curl() {
   if [ -n "${CIPHER_TOKEN:-}" ]; then
     curl -fsS -H "Authorization: Bearer ${CIPHER_TOKEN}" "$@"
   else
+    # LOUD on purpose: against a token-configured cipher this branch 401s,
+    # and a bare curl failure then reads as "cipher down" -- the exact
+    # false-negative class the fleet has paid for repeatedly. Name the
+    # cause before any caller turns the exit code into a verdict.
+    if [ "${CIPHER_TOKEN_WARNED:-}" != "1" ]; then
+      warn "CIPHER_TOKEN unset -- probing UNAUTHENTICATED. A token-enabled cipher will 401 and report 'not reachable' while healthy. Set CIPHER_TOKEN to probe for real."
+      CIPHER_TOKEN_WARNED=1
+    fi
     curl -fsS "$@"
   fi
 }
