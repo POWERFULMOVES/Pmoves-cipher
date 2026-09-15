@@ -67,7 +67,10 @@ async function resolveToken(token: string): Promise<{agentId: string; scopes: st
     const resp = await fetch(
       `${SUPABASE_REST_URL}/cipher_agent_tokens?token_uuid=eq.${uuid}&revoked_at=is.null&select=agent_id,scopes`,
       {
-        headers: {apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`},
+        // cipher_agent_tokens lives in pmoves_core, not the default public
+        // profile — without this header PostgREST 404s the lookup and every
+        // per-agent token fails as "invalid".
+        headers: {apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, 'Accept-Profile': 'pmoves_core'},
         signal: AbortSignal.timeout(3000),
       },
     )
