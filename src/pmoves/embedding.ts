@@ -21,7 +21,6 @@
  *                         handoff embedding-model-routing-2026-09-02); 30s
  *                         absorbs a post-restart model load.
  */
- */
 
 import { randomUUID } from 'node:crypto'
 
