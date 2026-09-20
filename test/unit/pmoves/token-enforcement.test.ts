@@ -52,7 +52,12 @@ function simulatedAuthMiddleware(agentId: string | undefined, scopes: string[] =
   }
 }
 
-async function startTestApp(authAgentId: string | undefined): Promise<{server: http.Server; baseUrl: string}> {
+// The MemoryManager is returned so a test can seed a record owned by a
+// DIFFERENT agent than the one the token authenticates. Cross-agent reads
+// cannot be set up through the HTTP surface alone: the simulated auth
+// middleware fixes one agentId for the lifetime of the app, so every request
+// to a given instance speaks as the same agent.
+async function startTestApp(authAgentId: string | undefined): Promise<{server: http.Server; baseUrl: string; mm: MemoryManager}> {
   const app = express()
   app.use(express.json())
   app.use(simulatedAuthMiddleware(authAgentId, ['memory:read', 'memory:write']))
@@ -61,9 +66,22 @@ async function startTestApp(authAgentId: string | undefined): Promise<{server: h
   return new Promise((resolve) => {
     const server = app.listen(0, () => {
       const {port} = server.address() as AddressInfo
-      resolve({server, baseUrl: `http://localhost:${port}`})
+      resolve({server, baseUrl: `http://localhost:${port}`, mm})
     })
   })
+}
+
+/** Seed a memory owned by `ownerAgentId`, bypassing the HTTP layer. */
+async function seedMemory(mm: MemoryManager, ownerAgentId: string, content: string): Promise<string> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const created = await (mm as any).create({content, metadata: {agentId: ownerAgentId, category: 'context'}, tags: []})
+  // The mock's create() omits createdAt, but GET /memory/:id calls
+  // new Date(memory.createdAt).toISOString(), which throws RangeError on
+  // undefined and surfaces as a 500. That no existing test tripped this is
+  // itself evidence the route was never exercised: the suite covered POST and
+  // search, the two routes that already enforced identity.
+  created.createdAt = Date.now()
+  return created.id as string
 }
 
 function httpRequest(baseUrl: string, method: string, path: string, body?: any): Promise<{status: number; body: any}> {
@@ -158,6 +176,80 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
       try {
         const r = await httpRequest(baseUrl, 'GET', '/api/memory/search?q=test&agentId=*')
         expect(r.status).to.equal(200)
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+  })
+
+  // GET /api/memory/:id was the one memory route with no identity check, while
+  // POST, search and DELETE all called assertAgentId. The suite mirrored that
+  // gap exactly -- it covered the three enforced routes and never asked about
+  // read-by-id -- so the hole stayed green. Flagged in PR #12 review, unfixed.
+  describe('GET /api/memory/:id — token enforcement (IDOR)', () => {
+    it('does not return a memory belonging to another agent', async () => {
+      const {server, baseUrl, mm} = await startTestApp('claude-4090')
+      try {
+        const victimId = await seedMemory(mm, 'crush-spark', 'another agent private memory')
+        const r = await httpRequest(baseUrl, 'GET', `/api/memory/${victimId}`)
+        expect(r.status).to.not.equal(200)
+        // The body must not leak the record under any status.
+        expect(JSON.stringify(r.body)).to.not.contain('another agent private memory')
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('answers 404 (not 403) for another agent memory, so IDs cannot be probed', async () => {
+      const {server, baseUrl, mm} = await startTestApp('claude-4090')
+      try {
+        const victimId = await seedMemory(mm, 'crush-spark', 'private')
+        const hit = await httpRequest(baseUrl, 'GET', `/api/memory/${victimId}`)
+        const miss = await httpRequest(baseUrl, 'GET', '/api/memory/definitely-not-a-real-id')
+        // Identical responses: a 403 here would confirm the id EXISTS and is
+        // simply owned by someone else, which is an enumeration oracle over
+        // nanoid(12) keys. "Not yours" and "not there" must be indistinguishable.
+        expect(hit.status).to.equal(404)
+        expect(miss.status).to.equal(404)
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('allows an agent to read its own memory', async () => {
+      const {server, baseUrl, mm} = await startTestApp('claude-4090')
+      try {
+        const ownId = await seedMemory(mm, 'claude-4090', 'my own memory')
+        const r = await httpRequest(baseUrl, 'GET', `/api/memory/${ownId}`)
+        expect(r.status).to.equal(200)
+        expect(r.body.content).to.equal('my own memory')
+        expect(r.body.agentId).to.equal('claude-4090')
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('advisory mode (no token) still allows cross-agent read', async () => {
+      // Advisory mode is the documented dev-skip path: assertAgentId returns
+      // early when the request carries no agent identity. Enforcing here would
+      // break every unauthenticated local workflow, so this asserts the fix is
+      // scoped to token mode and changes nothing else.
+      const {server, baseUrl, mm} = await startTestApp(undefined)
+      try {
+        const id = await seedMemory(mm, 'crush-spark', 'advisory readable')
+        const r = await httpRequest(baseUrl, 'GET', `/api/memory/${id}`)
+        expect(r.status).to.equal(200)
+        expect(r.body.content).to.equal('advisory readable')
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('still 404s for an id that does not exist', async () => {
+      const {server, baseUrl} = await startTestApp('claude-4090')
+      try {
+        const r = await httpRequest(baseUrl, 'GET', '/api/memory/no-such-id')
+        expect(r.status).to.equal(404)
       } finally {
         await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
       }

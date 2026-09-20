@@ -28,11 +28,30 @@ const DEFAULT_TENSORZERO_URL = process.env.TENSORZERO_URL ?? 'http://tensorzero-
 const DEFAULT_QDRANT_URL = process.env.QDRANT_URL ?? 'http://qdrant:6333'
 const DEFAULT_QDRANT_COLLECTION = process.env.QDRANT_COLLECTION ?? 'pmoves_cipher_memory'
 const DEFAULT_EMBEDDING_MODEL = process.env.EMBEDDING_MODEL ?? 'tensorzero::embedding_model_name::qwen3_embedding_4b_local'
-const DEFAULT_EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM ?? 2560)
+/**
+ * Parse a positive number from an env var, falling back when it is absent or
+ * unusable. Exported so the parsing is testable on its own: these values are
+ * read once at module load, and an ESM module cannot be re-imported per test
+ * to exercise different env states.
+ *
+ * `Number()` alone is the trap this closes. `Number('')` is 0 and
+ * `Number('abc')` is NaN, and either one handed to `AbortSignal.timeout()`
+ * aborts the request immediately -- which this file then logs as
+ * "unreachable", the precise false-negative that turned a slow cold model load
+ * into a multi-day misdiagnosis. A bad value must fall back loudly to a
+ * working default, never silently disable embeddings.
+ */
+export function positiveNumberFromEnv(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback
+  const parsed = Number(String(raw).trim())
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+const DEFAULT_EMBEDDING_DIM = positiveNumberFromEnv(process.env.EMBEDDING_DIM, 2560)
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY ?? ''
 const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://pmoves-ollama:11434'
 const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? 'qwen3-embedding:4b'
-const EMBED_TIMEOUT_MS = Number(process.env.PMOVES_EMBED_TIMEOUT_MS ?? 30000)
+const EMBED_TIMEOUT_MS = positiveNumberFromEnv(process.env.PMOVES_EMBED_TIMEOUT_MS, 30_000)
 
 // Named vector fields in the Qdrant collection.
 const DENSE_FIELD = 'dense'

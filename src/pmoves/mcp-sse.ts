@@ -33,6 +33,37 @@ const TOOL_GRAPH_EXPAND = 'pmoves_cipher_graph_expand'
 const TOOL_MCP_LIST = 'pmoves_cipher_mcp_list'
 const TOOL_MCP_GET = 'pmoves_cipher_mcp_get'
 
+/**
+ * The scope a tool call requires, or `undefined` when it requires none.
+ *
+ * `assertAgentId` has accepted a `requiredScope` argument since PR #12 and
+ * implements the check correctly, but its one call site never passed a value,
+ * so the per-operation enforcement advertised in the tool schemas never ran.
+ * This table is what makes that parameter reachable.
+ *
+ * TOOL_MCP_LIST and TOOL_MCP_GET are deliberately unmapped. The minting
+ * default issues memory:{read,write}, reasoning:{read,write} and
+ * session:{read,write} -- there is no `mcp:*` scope, so demanding one here
+ * would reject every token currently in existence and turn a missing check
+ * into a total outage. They stay unmapped until such a scope is actually
+ * issued; `tool-scopes.test.ts` asserts this table never demands a scope the
+ * minting default does not hand out.
+ */
+const TOOL_SCOPES: Readonly<Record<string, string>> = {
+  [TOOL_GRAPH_EXPAND]: 'memory:read',
+  [TOOL_HYBRID_SEARCH]: 'memory:read',
+  [TOOL_REASONING_PATTERNS]: 'reasoning:read',
+  [TOOL_SEARCH]: 'memory:read',
+  [TOOL_SESSION_RECALL]: 'session:read',
+  [TOOL_SESSION_SAVE]: 'session:write',
+  [TOOL_STORE]: 'memory:write',
+  [TOOL_STORE_REASONING]: 'reasoning:write',
+}
+
+export function requiredScopeForTool(toolName: string): string | undefined {
+  return TOOL_SCOPES[toolName]
+}
+
 const CATEGORIES = [
   'code_pattern',
   'decision',
@@ -257,7 +288,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, a
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const {arguments: args = {}, name} = request.params
     const argsAgentId = (args as {agentId?: string}).agentId
-    if (argsAgentId) assertAgentId(auth, argsAgentId)
+    if (argsAgentId) assertAgentId(auth, argsAgentId, requiredScopeForTool(name))
 
     // ── TOOL_STORE ──────────────────────────────────────────────────────
     if (name === TOOL_STORE) {

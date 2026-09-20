@@ -148,6 +148,29 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
   router.get('/memory/:id', async (req, res) => {
     try {
       const memory = await memoryManager.get(req.params.id)
+
+      // Ownership check, mirroring DELETE /memory/:id below. This route is
+      // fetch-by-key, so the caller supplies no agentId for assertAgentId to
+      // compare against -- the owner is a property of the STORED record. That
+      // shape difference is why the sibling routes' pattern did not fit here
+      // and why the check was missed (raised in PR #12 review, unfixed since).
+      //
+      // 404 rather than DELETE's 403, deliberately: a 403 confirms the id
+      // exists and is merely someone else's, which is an enumeration oracle
+      // over nanoid(12) keys on a READ path. "Not yours" and "not there" must
+      // be indistinguishable. DELETE additionally names the owning agent in its
+      // error, a milder form of the same leak, left alone here as out of scope.
+      //
+      // Advisory mode (no req.agentId) is untouched, matching assertAgentId's
+      // documented dev-skip: enforcing there would break unauthenticated local
+      // workflows that never opted into per-agent tokens.
+      const authAgentId = req.agentId
+      const ownerAgentId = memory.metadata?.agentId as string | undefined
+      if (authAgentId && ownerAgentId !== authAgentId) {
+        res.status(404).json({error: 'Memory not found'})
+        return
+      }
+
       res.json({
         agentId: (memory.metadata?.agentId as string) ?? 'unknown',
         category: (memory.metadata?.category as string) ?? 'context',
