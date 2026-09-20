@@ -255,4 +255,79 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
       }
     })
   })
+
+  // DELETE already carried an ownership check, but it guarded on
+  // `ownerAgentId && ownerAgentId !== agentId` -- so a record with NO recorded
+  // owner skipped the check entirely and was deletable by any token holder.
+  // That is data loss rather than disclosure, which makes it the more serious
+  // of the two. It also answered 403 and named the owning agent, both of which
+  // leak more than GET does after the fix in this stack.
+  describe('DELETE /api/memory/:id — ownership', () => {
+    it('does not delete a memory that has no recorded owner', async () => {
+      const {server, baseUrl, mm} = await startTestApp('claude-4090')
+      try {
+        // No agentId in metadata at all -- a legacy or unattributed record.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const created = await (mm as any).create({content: 'unowned', metadata: {category: 'context'}, tags: []})
+        created.createdAt = Date.now()
+        const r = await httpRequest(baseUrl, 'DELETE', `/api/memory/${created.id}?agentId=claude-4090`)
+        expect(r.status).to.not.equal(204)
+        // And it must still be there afterwards.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const survivor = await (mm as any).get(created.id).catch(() => undefined)
+        expect(survivor, 'unowned memory was deleted').to.not.equal(undefined)
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('does not delete another agent memory, and answers 404 not 403', async () => {
+      const {server, baseUrl, mm} = await startTestApp('claude-4090')
+      try {
+        const victimId = await seedMemory(mm, 'crush-spark', 'not yours')
+        const r = await httpRequest(baseUrl, 'DELETE', `/api/memory/${victimId}?agentId=claude-4090`)
+        expect(r.status).to.equal(404)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const survivor = await (mm as any).get(victimId).catch(() => undefined)
+        expect(survivor, 'another agent memory was deleted').to.not.equal(undefined)
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('does not name the owning agent in the error body', async () => {
+      const {server, baseUrl, mm} = await startTestApp('claude-4090')
+      try {
+        const victimId = await seedMemory(mm, 'crush-spark', 'not yours')
+        const r = await httpRequest(baseUrl, 'DELETE', `/api/memory/${victimId}?agentId=claude-4090`)
+        // Naming the owner discloses WHO holds the record on top of confirming
+        // that it exists. Operators still need that detail -- it belongs in the
+        // server log, not the response.
+        expect(JSON.stringify(r.body)).to.not.contain('crush-spark')
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('still lets an agent delete its own memory', async () => {
+      const {server, baseUrl, mm} = await startTestApp('claude-4090')
+      try {
+        const ownId = await seedMemory(mm, 'claude-4090', 'mine to remove')
+        const r = await httpRequest(baseUrl, 'DELETE', `/api/memory/${ownId}?agentId=claude-4090`)
+        expect(r.status).to.equal(204)
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('still 404s for an id that does not exist', async () => {
+      const {server, baseUrl} = await startTestApp('claude-4090')
+      try {
+        const r = await httpRequest(baseUrl, 'DELETE', '/api/memory/no-such-id?agentId=claude-4090')
+        expect(r.status).to.equal(404)
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+  })
 })

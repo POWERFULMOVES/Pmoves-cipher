@@ -197,12 +197,25 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
       // Ownership check: fetch the memory first and verify it belongs to the
       // requesting agent BEFORE deleting anything. Prevents an agent from
       // deleting another agent's memory by guessing the id.
+      //
+      // The comparison is `ownerAgentId !== agentId`, NOT
+      // `ownerAgentId && ownerAgentId !== agentId`. The earlier form skipped
+      // the check entirely for a record carrying no agentId in its metadata,
+      // so any token holder could delete unattributed memories -- data loss,
+      // not merely disclosure, and the most serious of the three defects here.
+      // Absent ownership now reads as "not yours", matching GET /memory/:id.
+      //
+      // 404 rather than 403, and no owner name in the body: a 403 confirms the
+      // id exists, and naming the owner additionally discloses who holds it.
+      // The operator-facing detail is dropped rather than logged because
+      // nothing under src/pmoves/ logs, and introducing a logger here is out of
+      // scope for a security fix.
       if (agentId) {
         try {
           const memory = await memoryManager.get(req.params.id)
-          const ownerAgentId = (memory.metadata?.agentId as string) ?? undefined
-          if (ownerAgentId && ownerAgentId !== agentId) {
-            res.status(403).json({error: `Memory ${req.params.id} belongs to agent '${ownerAgentId}', not '${agentId}'`})
+          const ownerAgentId = memory.metadata?.agentId as string | undefined
+          if (ownerAgentId !== agentId) {
+            res.status(404).json({error: 'Memory not found'})
             return
           }
         } catch (error) {
