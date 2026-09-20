@@ -10,6 +10,20 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, labeled]
     branches:
+      # THIS FORK'S DEFAULT BRANCH. Without it, this workflow never runs here.
+      #
+      # The list below was inherited from upstream (campfirein/byterover-cli),
+      # where `main` is the default. This fork was re-forked 2026-07-13 onto
+      # PMOVES.AI-Edition-Hardened and HAS NO `main`, `release/**` or `proj/**`
+      # branch -- so from that day until 2026-09-20 no pull request here ever
+      # matched, and `npm run test` never gated a single PR. PR #20 merged with
+      # a deterministically-failing test and four review fixes applied to the
+      # wrong file; its only checks were remove-label and CodeRabbit.
+      #
+      # The glob covers the -DoX / -Integrations variants as well as the base.
+      # Keep `main` and the others: harmless, and correct if this fork ever
+      # gains them.
+      - 'PMOVES.AI-Edition-Hardened*'
       - main
       - 'release/**'
       - 'proj/**'
