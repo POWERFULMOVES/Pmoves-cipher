@@ -6,18 +6,18 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Regression tests for scripts/openclaw-setup-pmovies.sh — the PMOVES Cipher
+// Regression tests for scripts/openclaw-setup-pmoves.sh — the PMOVES Cipher
 // installer for OpenClaw. These cover the paths the 2026-09-10 review flagged:
 // the disable-path ReferenceError (config must be parsed before use), the
 // authenticated preflight probe (agentId is mandatory on memory routes under
 // per-agent token mode), and the generated Store command (without the JSON
 // content type express.json() drops the body and the API answers 400).
 // Function-level: the script is sourced with
-// OPENCLAW_SETUP_PMOLVES_SKIP_MAIN=1 and the reviewed functions run against
+// OPENCLAW_SETUP_PMOVES_SKIP_MAIN=1 and the reviewed functions run against
 // temporary configs, with curl stubbed on PATH.
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SCRIPT = resolve(here, "..", "..", "scripts", "openclaw-setup-pmovies.sh");
+const SCRIPT = resolve(here, "..", "..", "scripts", "openclaw-setup-pmoves.sh");
 
 function shAvailable(): boolean {
   const probe = spawnSync("sh", ["-c", "true"]);
@@ -35,7 +35,7 @@ function runInSh(snippet: string, env: Record<string, string> = {}): RunResult {
     encoding: "utf8",
     env: {
       ...process.env,
-      OPENCLAW_SETUP_PMOLVES_SKIP_MAIN: "1",
+      OPENCLAW_SETUP_PMOVES_SKIP_MAIN: "1",
       NO_COLOR: "1",
       SETUP_SCRIPT: SCRIPT,
       ...env,
@@ -44,7 +44,7 @@ function runInSh(snippet: string, env: Record<string, string> = {}): RunResult {
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
-describe("openclaw-setup-pmovies.sh", function () {
+describe("openclaw-setup-pmoves.sh", function () {
   before(function () {
     if (!shAvailable()) {
       this.skip();
@@ -129,6 +129,14 @@ describe("openclaw-setup-pmovies.sh", function () {
     const dir = mkdtempSync(join(tmpdir(), "openclaw-tools-"));
     try {
       const toolsMd = join(dir, "TOOLS.md");
+      // update_tools_md UPDATES an existing workspace file -- it warns and
+      // returns when the file is absent. Without this seed the function
+      // early-returns, nothing is written, and the readFileSync below ENOENTs.
+      // This test has never passed: it was authored against the superseded
+      // duplicate and pr-validation (the only workflow running `npm test`)
+      // filters on `branches: [main, release/**, proj/**]`, none of which
+      // exist in this repo, so no PR here has ever run the suite.
+      writeFileSync(toolsMd, "# TOOLS\n\nExisting workspace tools doc.\n");
       const r = runInSh(`. "$SETUP_SCRIPT"; update_tools_md "$TOOLS_PATH"`, {
         TOOLS_PATH: toolsMd,
         CIPHER_URL: "http://127.0.0.1:8105",
