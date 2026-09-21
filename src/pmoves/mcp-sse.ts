@@ -129,16 +129,34 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
 
 function assertAgentId(auth: McpAuthContext, argsAgentId?: string, requiredScope?: string): void {
   const {agentId: authAgentId, scopes: authScopes = []} = auth
-  if (authAgentId && argsAgentId !== authAgentId) {
+
+  // Advisory / dev-skip mode: with no authenticated agent there is no token to
+  // enforce against, and unauthenticated local workflows that never opted into
+  // per-agent tokens must keep working. Every check below is gated on this.
+  if (!authAgentId) return
+
+  // An OMITTED agentId is rejected, not waved through. Every tool schema marks
+  // agentId as required, but `required` is advisory -- a non-conforming client
+  // simply leaves it out, and the call site used to skip this function whole
+  // when it did (`if (argsAgentId) assertAgentId(...)`). Most handlers throw on
+  // a missing agentId themselves, but hybrid_search and session_recall pass it
+  // to EmbeddingSidecar.search(), which applies the Qdrant scope filter only
+  // `if (agentId)` -- so an omitted one meant an UNSCOPED, cross-agent search
+  // that had also bypassed the scope check below.
+  if (!argsAgentId) {
+    throw new Error(`Forbidden: agentId is required; token belongs to agent '${authAgentId}'`)
+  }
+
+  if (argsAgentId !== authAgentId) {
     throw new Error(`Forbidden: token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`)
   }
 
-  if (requiredScope && authAgentId && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
+  if (requiredScope && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
     throw new Error(`Forbidden: missing required scope '${requiredScope}'`)
   }
 }
 
-function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Server {
+export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Server {
 
   const server = new Server(
     {name: 'pmoves-cipher', version: '0.1.0'},
@@ -288,7 +306,10 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, a
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const {arguments: args = {}, name} = request.params
     const argsAgentId = (args as {agentId?: string}).agentId
-    if (argsAgentId) assertAgentId(auth, argsAgentId, requiredScopeForTool(name))
+    // Unconditional: the `if (argsAgentId)` guard this replaces made the whole
+    // authorization gate opt-out by simply omitting agentId. assertAgentId
+    // owns the dev-skip decision now -- see its first branch.
+    assertAgentId(auth, argsAgentId, requiredScopeForTool(name))
 
     // ── TOOL_STORE ──────────────────────────────────────────────────────
     if (name === TOOL_STORE) {
