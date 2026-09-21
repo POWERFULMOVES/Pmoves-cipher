@@ -202,7 +202,12 @@ describe('pmoves per-agent isolation (PR #11 regression tests)', () => {
       memories.push(makeMockMemory('target', 'secret', 'crush-spark'))
 
       const r = await httpRequest(baseUrl, 'DELETE', '/api/memory/target?agentId=claude-4090')
-      expect(r.status).to.equal(403)
+      // 404, not 403: a 403 confirms the id EXISTS and is merely someone
+      // else's, which is an enumeration oracle over nanoid(12) keys. "Not
+      // yours" and "not there" must be indistinguishable. This assertion said
+      // 403 until the route was hardened; the rejection itself is what this
+      // test guards, and that still holds.
+      expect(r.status).to.equal(404)
       // Verify memory still exists
       expect(memories.find((m) => m.id === 'target')).to.exist
     })
