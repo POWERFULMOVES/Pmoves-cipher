@@ -24,10 +24,23 @@ export interface HiragResult {
   metadata?: Record<string, unknown>
 }
 
-const DEFAULT_CPU_URL = process.env.HIRAG_URL ?? 'http://hi-rag-gateway-v2:8086'
-const DEFAULT_GPU_URL = process.env.HIRAG_GPU_URL ?? 'http://hi-rag-gateway-v2-gpu:8087'
+interface HiragQueryRow {
+  content: string
+  score: number
+  metadata?: Record<string, unknown>
+}
 
-class HiragClientImpl {
+interface HiragQueryEnvelope {
+  hits?: HiragQueryRow[]
+  results?: HiragQueryRow[]
+}
+
+export const HIRAG_DEFAULT_GPU_URL = 'http://hi-rag-gateway-v2-gpu:8086'
+
+const DEFAULT_CPU_URL = process.env.HIRAG_URL ?? 'http://hi-rag-gateway-v2:8086'
+const DEFAULT_GPU_URL = process.env.HIRAG_GPU_URL ?? HIRAG_DEFAULT_GPU_URL
+
+export class HiragClientImpl {
   private readonly cpuUrl: string
   private readonly gpuUrl: string
   private gpuAvailable: boolean | null = null
@@ -51,8 +64,11 @@ class HiragClientImpl {
         process.stderr.write(`pmoves-hirag: HiRAG returned ${resp.status}\n`)
         return []
       }
-      const data = await resp.json() as {results: Array<{content: string; score: number; metadata?: Record<string, unknown>}>}
-      return (data.results ?? []).map((r) => ({
+      const data = await resp.json() as HiragQueryEnvelope
+      // Hi-RAG v2 answers {query, k, used_rerank, rerank_provider, hits}; older
+      // builds answered {results}. Accept either, and an unknown shape as empty.
+      const rows = data?.hits ?? data?.results ?? []
+      return rows.map((r) => ({
         content: r.content,
         score: r.score,
         collection: 'pmoves_chunks_qwen3',
