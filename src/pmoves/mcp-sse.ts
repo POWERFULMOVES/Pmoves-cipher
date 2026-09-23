@@ -11,6 +11,7 @@ import {type Request, Router} from 'express'
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
 
+import './auth.js' // Express.Request agentId/scopes augmentation used by identityFromRequest
 import {getEmbeddingSidecar} from './embedding.js'
 import {getGraphClient} from './graph.js'
 import {getHiragClient} from './hirag-client.js'
@@ -221,8 +222,8 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
   router.post('/', async (req, res) => {
     const server = buildMcpServer(memoryManager, nats, identityFromRequest(req))
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
       enableJsonResponse: true,
+      sessionIdGenerator: undefined,
     })
     res.on('close', () => {
       void transport.close()
