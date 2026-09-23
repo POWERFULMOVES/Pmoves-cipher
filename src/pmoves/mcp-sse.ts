@@ -93,10 +93,18 @@ export function requiredScopeForTool(toolName: string): string | undefined {
   }
 }
 
-/** Tools whose agentId may be the "*" cross-agent wildcard (refused with a token, as on REST). */
-function acceptsWildcard(toolName: string): boolean {
-  return toolName === TOOL_SEARCH || toolName === TOOL_REASONING_PATTERNS
+/** Why a call disagrees with its token. `absolute` violations are refused in every mode. */
+export interface IdentityViolation {
+  /**
+   * missing-agent / wildcard: refused in EVERY mode (REST parity; otherwise an
+   * omitted or "*" agentId reaches sidecar.search unscoped = cross-agent read).
+   * mismatch / scope: refused only under CIPHER_MCP_ENFORCE; advisory logs.
+   */
+  kind: 'missing-agent' | 'mismatch' | 'scope' | 'wildcard'
+  reason: string
 }
+
+const ABSOLUTE_VIOLATIONS = new Set<IdentityViolation['kind']>(['missing-agent', 'wildcard'])
 
 /**
  * Return why a call violates its token identity, or undefined if it does not.
@@ -104,23 +112,25 @@ function acceptsWildcard(toolName: string): boolean {
  * token present -> agentId required, "*" refused, agentId must equal the
  * token's; plus the per-tool scope (admin satisfies any scope).
  */
-export function identityViolation(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined): string | undefined {
+export function identityViolation(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined): IdentityViolation | undefined {
   const {agentId: authAgentId, scopes: authScopes = []} = auth
   if (!authAgentId) return undefined
 
-  if (!argsAgentId) return `agentId is required when a token is present (token belongs to agent '${authAgentId}')`
+  if (!argsAgentId) {
+    return {kind: 'missing-agent', reason: `agentId is required when a token is present (token belongs to agent '${authAgentId}')`}
+  }
 
-  if (argsAgentId === '*' && acceptsWildcard(toolName)) {
-    return `cross-agent wildcard search is not allowed in token enforcement mode (token belongs to agent '${authAgentId}')`
+  if (argsAgentId === '*') {
+    return {kind: 'wildcard', reason: `cross-agent wildcard agentId is not allowed with a token (token belongs to agent '${authAgentId}')`}
   }
 
   if (argsAgentId !== authAgentId) {
-    return `token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`
+    return {kind: 'mismatch', reason: `token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`}
   }
 
   const requiredScope = requiredScopeForTool(toolName)
   if (requiredScope && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
-    return `missing required scope '${requiredScope}' (token belongs to agent '${authAgentId}')`
+    return {kind: 'scope', reason: `missing required scope '${requiredScope}' (token belongs to agent '${authAgentId}')`}
   }
 
   return undefined
@@ -133,11 +143,11 @@ function surfaceAdvisory(detail: string): void {
 function enforceIdentity(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined): void {
   const violation = identityViolation(auth, toolName, argsAgentId)
   if (!violation) return
-  if (isMcpEnforceEnabled()) {
-    throw new McpError(MCP_FORBIDDEN_CODE, `Forbidden: ${violation}`, {httpStatus: 403, tool: toolName})
+  if (ABSOLUTE_VIOLATIONS.has(violation.kind) || isMcpEnforceEnabled()) {
+    throw new McpError(MCP_FORBIDDEN_CODE, `Forbidden: ${violation.reason}`, {httpStatus: 403, kind: violation.kind, tool: toolName})
   }
 
-  surfaceAdvisory(`tool=${toolName} token-agent='${auth.agentId}' declared-agent='${argsAgentId ?? '<none>'}' reason="${violation}"`)
+  surfaceAdvisory(`tool=${toolName} token-agent='${auth.agentId}' declared-agent='${argsAgentId ?? '<none>'}' reason="${violation.reason}"`)
 }
 
 const TOOL_STORE = 'pmoves_cipher_store'

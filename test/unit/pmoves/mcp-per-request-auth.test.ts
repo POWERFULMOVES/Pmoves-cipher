@@ -266,6 +266,32 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       expect(stderr.lines.filter((l) => /advisory/i.test(l))).to.have.length(0)
     })
 
+    // F3 (review of #27): advisory tolerates ONLY a declared-name mismatch.
+    // An omitted agentId or "*" with a token is refused in every mode, as on
+    // REST — otherwise session_recall / hybrid_search / graph_expand reach
+    // sidecar.search(agentId=undefined), an unscoped cross-agent read.
+    it('F3: refuses an OMITTED agentId with a token even in advisory mode', async () => {
+      for (const tool of ['pmoves_cipher_session_recall', 'pmoves_cipher_hybrid_search', 'pmoves_cipher_graph_expand', SEARCH]) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(tool, {memoryId: 'm', query: 'q'}))
+        expect(isForbidden(r.body), `${tool}: ${JSON.stringify(r.body)}`).to.equal(true)
+        expect(r.body.error.code, tool).to.equal(-32_003)
+      }
+    })
+
+    it('F3: refuses agentId "*" with a token even in advisory mode', async () => {
+      for (const tool of [SEARCH, 'pmoves_cipher_reasoning_patterns', 'pmoves_cipher_session_recall']) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(tool, {agentId: '*', query: 'q'}))
+        expect(isForbidden(r.body), `${tool}: ${JSON.stringify(r.body)}`).to.equal(true)
+      }
+    })
+
+    it('F3: omitted agentId WITHOUT a token (dev-skip) is still not refused by identity', async () => {
+      const r = await streamablePost(baseUrl, {}, toolCall('pmoves_cipher_mcp_list', {}))
+      expect(isResult(r.body), JSON.stringify(r.body)).to.equal(true)
+    })
+
     it('treats CIPHER_MCP_ENFORCE=false as advisory', async () => {
       process.env[ENFORCE_ENV] = 'false'
       const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {agentId: 'claude-4090', content: 'x'}))
@@ -280,6 +306,7 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {agentId: 'claude-4090', content: 'x'}))
       expect(isForbidden(r.body), JSON.stringify(r.body)).to.equal(true)
       expect(r.body.error.data?.httpStatus).to.equal(403)
+      expect(r.body.error.code).to.equal(-32_003)
     })
 
     it('accepts a matching agentId', async () => {
