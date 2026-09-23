@@ -4,12 +4,14 @@ import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/st
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  McpError,
 } from '@modelcontextprotocol/sdk/types.js'
-import {Router} from 'express'
+import {type Request, Router} from 'express'
 
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
 
+import './auth.js' // Express.Request agentId/scopes augmentation used by identityFromRequest
 import {getEmbeddingSidecar} from './embedding.js'
 import {getGraphClient} from './graph.js'
 import {getHiragClient} from './hirag-client.js'
@@ -20,6 +22,437 @@ export interface McpAuthContext {
   agentId?: string
   /** Resolved scopes from auth middleware. */
   scopes?: string[]
+}
+
+// ─── Identity enforcement ───────────────────────────────────────────────────
+// Identity on the MCP path is derived PER REQUEST from what the auth middleware
+// resolved (req.agentId / req.scopes). It is never taken from router
+// construction: the router is built once and shared by every caller, so a
+// construction-time identity would either be empty (every check skipped) or be
+// one caller's identity applied to everyone.
+//
+// CIPHER_MCP_ENFORCE (default off) selects what happens when a caller's
+// declared agentId / scopes disagree with its token:
+//   off (advisory) — the call proceeds and one `pmoves-mcp-auth: ADVISORY` line
+//                    naming token-agent vs declared-agent goes to stderr.
+//   on  (enforce)  — the call is refused with an McpError (code -32003,
+//                    data.httpStatus 403, message prefixed `Forbidden:`), the
+//                    same wording the REST path (/api/memory) returns as 403.
+// Advisory is the default so that shipping this never silently removes memory
+// access from an agent that still shares the bootstrap token.
+export const MCP_ENFORCE_ENV = 'CIPHER_MCP_ENFORCE'
+
+/** JSON-RPC server-error-range code used for authorization refusals (~ HTTP 403). */
+export const MCP_FORBIDDEN_CODE = -32_003
+
+const ENFORCE_VALUES = new Set(['1', 'enforce', 'on', 'true', 'yes'])
+const ADVISORY_VALUES = new Set(['', '0', 'advisory', 'false', 'no', 'off'])
+
+export interface McpEnforceFlag {
+  mode: 'advisory' | 'enforce'
+  raw: string | undefined
+  /** false = a value outside both lists; it falls back to advisory and is WARNed. */
+  recognised: boolean
+}
+
+/** Parse CIPHER_MCP_ENFORCE. Unknown values (`enabled`, `strict`, `2`, `"true"`) stay advisory — loudly (F2). */
+export function parseMcpEnforceFlag(raw: string | undefined): McpEnforceFlag {
+  const v = (raw ?? '').trim().toLowerCase()
+  if (ENFORCE_VALUES.has(v)) return {mode: 'enforce', raw, recognised: true}
+  return {mode: 'advisory', raw, recognised: ADVISORY_VALUES.has(v)}
+}
+
+const warnedFlagValues = new Set<string>()
+
+function warnIfUnrecognised(flag: McpEnforceFlag): void {
+  if (flag.recognised || warnedFlagValues.has(String(flag.raw))) return
+  warnedFlagValues.add(String(flag.raw))
+  process.stderr.write(`pmoves-mcp-auth: WARN unrecognised ${MCP_ENFORCE_ENV}=${JSON.stringify(flag.raw)} — staying ADVISORY. Use one of: ${[...ENFORCE_VALUES].join('|')} (enforce) or ${[...ADVISORY_VALUES].filter(Boolean).join('|')} (advisory)\n`)
+}
+
+export function isMcpEnforceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const flag = parseMcpEnforceFlag(env[MCP_ENFORCE_ENV])
+  warnIfUnrecognised(flag)
+  return flag.mode === 'enforce'
+}
+
+/** Startup line: which mode the MCP identity check is in, and from what value (F2). */
+export function logMcpAuthMode(env: NodeJS.ProcessEnv = process.env): McpEnforceFlag {
+  const flag = parseMcpEnforceFlag(env[MCP_ENFORCE_ENV])
+  process.stderr.write(`pmoves-mcp-auth: mode=${flag.mode} (${MCP_ENFORCE_ENV}=${JSON.stringify(flag.raw ?? null)})\n`)
+  warnIfUnrecognised(flag)
+  return flag
+}
+
+export function identityFromRequest(req: Request): McpAuthContext {
+  return {agentId: req.agentId, scopes: req.scopes}
+}
+
+/**
+ * Scope each tool requires when a token is present; undefined = none. A
+ * function (not a table) so it reads the TOOL_* constants at call time.
+ * Name and mapping match fork PR #26's `requiredScopeForTool` so the two can
+ * merge; mcp_list/mcp_get stay unmapped because no `mcp:*` scope is minted.
+ */
+export function requiredScopeForTool(toolName: string): string | undefined {
+  switch (toolName) {
+    case TOOL_GRAPH_EXPAND:
+    case TOOL_HYBRID_SEARCH:
+    case TOOL_SEARCH: {
+      return 'memory:read'
+    }
+
+    case TOOL_REASONING_PATTERNS: {
+      return 'reasoning:read'
+    }
+
+    case TOOL_SESSION_RECALL: {
+      return 'session:read'
+    }
+
+    case TOOL_SESSION_SAVE: {
+      return 'session:write'
+    }
+
+    case TOOL_STORE: {
+      return 'memory:write'
+    }
+
+    case TOOL_STORE_REASONING: {
+      return 'reasoning:write'
+    }
+
+    default: {
+      return undefined
+    }
+  }
+}
+
+/** Why a call disagrees with its token. `absolute` violations are refused in every mode. */
+export interface IdentityViolation {
+  /**
+   * missing-agent / wildcard: refused in EVERY mode (REST parity; otherwise an
+   * omitted or "*" agentId reaches sidecar.search unscoped = cross-agent read).
+   * mismatch / scope: refused only under CIPHER_MCP_ENFORCE; advisory logs.
+   */
+  kind: 'mismatch' | 'missing-agent' | 'scope' | 'wildcard'
+  reason: string
+  /** The missing scope, for kind 'scope'. */
+  scope?: string
+}
+
+const ABSOLUTE_VIOLATIONS = new Set<IdentityViolation['kind']>(['missing-agent', 'wildcard'])
+
+/**
+ * Return why a call violates its token identity, or undefined if it does not.
+ * Mirrors memory-routes.ts assertAgentId: no token -> no check (dev-skip);
+ * token present -> agentId required, "*" refused, agentId must equal the
+ * token's; plus the per-tool scope (admin satisfies any scope).
+ */
+export function identityViolation(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined): IdentityViolation | undefined {
+  const {agentId: authAgentId, scopes: authScopes = []} = auth
+  if (!authAgentId) return undefined
+
+  if (!argsAgentId) {
+    return {kind: 'missing-agent', reason: `agentId is required when a token is present (token belongs to agent '${authAgentId}')`}
+  }
+
+  if (argsAgentId === '*') {
+    return {kind: 'wildcard', reason: `cross-agent wildcard agentId is not allowed with a token (token belongs to agent '${authAgentId}')`}
+  }
+
+  if (argsAgentId !== authAgentId) {
+    return {kind: 'mismatch', reason: `token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`}
+  }
+
+  const requiredScope = requiredScopeForTool(toolName)
+  if (requiredScope && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
+    return {kind: 'scope', reason: `missing required scope '${requiredScope}' (token belongs to agent '${authAgentId}')`, scope: requiredScope}
+  }
+
+  return undefined
+}
+
+export const MCP_ADVISORY_INTERVAL_ENV = 'CIPHER_MCP_ADVISORY_INTERVAL_MS'
+export const MCP_ADVISORY_BUDGET_ENV = 'CIPHER_MCP_ADVISORY_BUDGET'
+const DEFAULT_ADVISORY_INTERVAL_MS = 60_000
+const DEFAULT_ADVISORY_BUDGET = 200
+const DEFAULT_MAX_ADVISORY_KEYS = 1000
+const CAP_SUMMARY_TOP = 20
+/** B2: below this the budget window resets on (nearly) every emit and the budget stops bounding anything. */
+export const MIN_ADVISORY_INTERVAL_MS = 1000
+
+function envNumber(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name]
+  const n = Number(raw)
+  return raw !== undefined && raw !== '' && Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
+// N2: JSON.stringify escapes C0 controls and quotes but passes these through
+// raw. Each can break or reorder a log line in a viewer: C1 controls (incl.
+// U+0085 NEL), U+2028/U+2029 line/paragraph separators, and every Unicode bidi
+// control (U+061C, U+200E/F, U+202A-U+202E, U+2066-U+2069).
+// Built from escapes (String.raw) so no raw separator character ever sits in this source file;
+// a literal would be rewritten to raw characters by autofix, and U+2028 inside a regex literal is a syntax error.
+// eslint-disable-next-line prefer-regex-literals
+const LOG_UNSAFE = new RegExp(String.raw`[\u0080-\u009F\u061C\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069]`, 'g')
+
+export function escapeLogJson(value: unknown): string {
+  return JSON.stringify(value).replaceAll(LOG_UNSAFE, (ch) => `\\u${ch.codePointAt(0)!.toString(16).padStart(4, '0')}`)
+}
+
+export type AuditOutcome = 'accepted' | 'refused'
+
+export interface AdvisoryEvent {
+  declaredAgent?: string
+  kind: string
+  posterAgent?: string
+  reason?: string
+  route?: string
+  scope?: string
+  sessionAgent?: string
+  tokenAgent?: string
+  tool?: string
+}
+
+export interface AdvisoryLogOptions {
+  /** Max first-occurrence lines per interval across ALL keys (F7d). */
+  budget?: number
+  intervalMs?: number
+  maxKeys?: number
+  now?: () => number
+  write?: (line: string) => void
+}
+
+interface KeyState {
+  at: number
+  event: AdvisoryEvent
+  outcome: AuditOutcome
+  suppressed: number
+}
+
+/** One budget pool: the lines ONE caller (token agent) produced for ONE outcome in the current window. */
+interface BudgetPool {
+  breakdown: Map<string, {count: number; kind: string; tokenAgent?: string; tool?: string}>
+  count: number
+  outcome: AuditOutcome
+  producer: string | undefined
+  suppressed: number
+  windowStart: number
+}
+
+/**
+ * The MCP identity audit trail. In advisory mode (the default) this log is the
+ * ONLY control, so it is built to be complete, bounded and unforgeable.
+ *
+ * GOVERNING RULE (B1): a suppression mechanism may only suppress lines from the
+ * caller producing the volume. Dedupe keys and budget pools both include the
+ * producing token agent, so a flooder drowns only itself.
+ *
+ *   F1/N2 — each line is one JSON object; caller values cannot add a line or
+ *           reorder one (escapeLogJson).
+ *   F7a   — dedupe key = outcome, kind, route, TOOL, missing scope, token agent,
+ *           declared agent: a read-to-write escalation gets its own line.
+ *   F7b   — hitting the key (or pool) cap flushes pending suppressed counts in
+ *           one ADVISORY-SUMMARY line before the map is cleared.
+ *   F7c   — pending suppressed counts are flushed when their interval elapses by
+ *           an unref()'d timer, so burst-then-silence is still reported.
+ *   F7d/B1 — a budget of first-occurrence lines per interval PER (outcome, token
+ *           agent) pool: REFUSED and ADVISORY never share a pool, and one
+ *           token's flood never consumes another token's budget. Overflow is
+ *           summarised per pool with a top-N (token agent, kind, tool) breakdown.
+ *   B2    — the interval is clamped to >= MIN_ADVISORY_INTERVAL_MS, with a WARN.
+ *   B3    — flushDue returns immediately until the earliest pending item is due.
+ *   N1    — refusals are logged through the same path with outcome "refused".
+ */
+export class AdvisoryLog {
+  private readonly budget: number
+  private readonly intervalMs: number
+  private readonly keys = new Map<string, KeyState>()
+  private readonly maxKeys: number
+  /** Earliest time any pending suppressed count becomes due; Infinity = nothing pending (B3). */
+  private nextDue = Number.POSITIVE_INFINITY
+  private readonly now: () => number
+  private readonly pools = new Map<string, BudgetPool>()
+  private timer: NodeJS.Timeout | undefined
+  private readonly write: (line: string) => void
+
+  constructor(options: AdvisoryLogOptions | number = {}) {
+    const opts = typeof options === 'number' ? {intervalMs: options} : options
+    this.write = opts.write ?? ((line: string) => { process.stderr.write(line) })
+    const requested = opts.intervalMs ?? envNumber(process.env, MCP_ADVISORY_INTERVAL_ENV, DEFAULT_ADVISORY_INTERVAL_MS)
+    if (requested < MIN_ADVISORY_INTERVAL_MS) {
+      this.write(`pmoves-mcp-auth: WARN ${MCP_ADVISORY_INTERVAL_ENV}=${escapeLogJson(requested)} is below the minimum ${MIN_ADVISORY_INTERVAL_MS}ms — clamped to ${MIN_ADVISORY_INTERVAL_MS}ms\n`)
+    }
+
+    this.intervalMs = Math.max(requested, MIN_ADVISORY_INTERVAL_MS)
+    this.budget = opts.budget ?? envNumber(process.env, MCP_ADVISORY_BUDGET_ENV, DEFAULT_ADVISORY_BUDGET)
+    this.maxKeys = opts.maxKeys ?? DEFAULT_MAX_ADVISORY_KEYS
+    this.now = opts.now ?? Date.now
+  }
+
+  private static producer(event: AdvisoryEvent): string | undefined {
+    // The caller producing the volume: the token behind the call. On
+    // /mcp/messages that is the POSTER, not the session owner.
+    return event.route === '/mcp/messages' ? event.posterAgent : event.tokenAgent
+  }
+
+  private static resetPool(pool: BudgetPool, now: number): void {
+    pool.breakdown.clear()
+    pool.count = 0
+    pool.suppressed = 0
+    pool.windowStart = now
+  }
+
+  emit(event: AdvisoryEvent, outcome: AuditOutcome = 'accepted'): void {
+    const now = this.now()
+    this.flushDue(now)
+    const key = JSON.stringify([outcome, event.kind, event.route, event.tool, event.scope, event.tokenAgent ?? event.sessionAgent, event.declaredAgent ?? event.posterAgent])
+    const prev = this.keys.get(key)
+    if (prev && now - prev.at < this.intervalMs) {
+      prev.suppressed += 1
+      this.schedule(prev.at + this.intervalMs)
+      return
+    }
+
+    const pool = this.pool(outcome, AdvisoryLog.producer(event), now)
+    if (pool.count >= this.budget) {
+      pool.suppressed += 1
+      const bkey = JSON.stringify([event.tokenAgent ?? event.posterAgent, event.kind, event.tool])
+      const b = pool.breakdown.get(bkey)
+      if (b) b.count += 1
+      else pool.breakdown.set(bkey, {count: 1, kind: event.kind, tokenAgent: event.tokenAgent ?? event.posterAgent, tool: event.tool})
+      this.schedule(pool.windowStart + this.intervalMs)
+      return
+    }
+
+    if (!prev && this.keys.size >= this.maxKeys) this.flushForCap()
+    pool.count += 1
+    this.keys.set(key, {at: now, event, outcome, suppressed: 0})
+    this.line(outcome === 'accepted' ? `ADVISORY (${MCP_ENFORCE_ENV} off, accepted)` : 'REFUSED', {...event, mode: isMcpEnforceEnabled() ? 'enforce' : 'advisory', outcome, suppressedSinceLast: prev?.suppressed ?? 0})
+  }
+
+  /** Emit summaries for pending counts whose interval has elapsed. Called by the timer and by emit; O(1) until something is due (B3). */
+  flushDue(now: number = this.now()): void {
+    if (now < this.nextDue) return
+    let next = Number.POSITIVE_INFINITY
+    for (const state of this.keys.values()) {
+      if (state.suppressed === 0) continue
+      if (now - state.at >= this.intervalMs) {
+        this.line('ADVISORY-SUMMARY', {...state.event, cause: 'interval', outcome: state.outcome, suppressed: state.suppressed, windowMs: this.intervalMs})
+        state.suppressed = 0
+      } else {
+        next = Math.min(next, state.at + this.intervalMs)
+      }
+    }
+
+    for (const pool of this.pools.values()) {
+      if (pool.suppressed === 0) continue
+      if (now - pool.windowStart >= this.intervalMs) {
+        this.budgetSummary(pool, 'budget')
+        AdvisoryLog.resetPool(pool, now)
+      } else {
+        next = Math.min(next, pool.windowStart + this.intervalMs)
+      }
+    }
+
+    this.nextDue = next
+    this.arm()
+  }
+
+  /** (Re)arm one unref()'d timeout for the earliest due time, or clear it when nothing is pending. */
+  private arm(): void {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
+    if (this.nextDue === Number.POSITIVE_INFINITY) return
+    // +1ms: a timer may fire marginally before Date.now() reaches the due time.
+    this.timer = setTimeout(() => this.flushDue(), Math.max(0, this.nextDue - this.now()) + 1)
+    this.timer.unref()
+  }
+
+  private budgetSummary(pool: BudgetPool, cause: 'budget' | 'pool-cap'): void {
+    const top = [...pool.breakdown.values()].sort((x, y) => y.count - x.count).slice(0, CAP_SUMMARY_TOP)
+    this.line('ADVISORY-SUMMARY', {budget: this.budget, cause, outcome: pool.outcome, suppressed: pool.suppressed, tokenAgent: pool.producer ?? null, top, windowMs: this.intervalMs})
+  }
+
+  private flushForCap(): void {
+    const pending = [...this.keys.values()].filter((s) => s.suppressed > 0).sort((x, y) => y.suppressed - x.suppressed)
+    if (pending.length > 0) {
+      const top = pending.slice(0, CAP_SUMMARY_TOP).map((s) => ({declaredAgent: s.event.declaredAgent ?? s.event.posterAgent, kind: s.event.kind, suppressed: s.suppressed, tokenAgent: s.event.tokenAgent ?? s.event.sessionAgent, tool: s.event.tool}))
+      this.line('ADVISORY-SUMMARY', {cause: 'cap', keys: pending.length, suppressedTotal: pending.reduce((n, s) => n + s.suppressed, 0), top})
+    }
+
+    this.keys.clear()
+  }
+
+  private line(tag: string, payload: Record<string, unknown>): void {
+    this.write(`pmoves-mcp-auth: ${tag} ${escapeLogJson(payload)}\n`)
+  }
+
+  private pool(outcome: AuditOutcome, producer: string | undefined, now: number): BudgetPool {
+    const pkey = JSON.stringify([outcome, producer ?? null])
+    let pool = this.pools.get(pkey)
+    if (pool && now - pool.windowStart >= this.intervalMs) {
+      if (pool.suppressed > 0) this.budgetSummary(pool, 'budget')
+      AdvisoryLog.resetPool(pool, now)
+    }
+
+    if (!pool) {
+      if (this.pools.size >= this.maxKeys) {
+        // Same discipline as the key cap (F7b): pending counts are reported, never dropped.
+        for (const p of this.pools.values()) if (p.suppressed > 0) this.budgetSummary(p, 'pool-cap')
+        this.pools.clear()
+      }
+
+      pool = {breakdown: new Map(), count: 0, outcome, producer, suppressed: 0, windowStart: now}
+      this.pools.set(pkey, pool)
+    }
+
+    return pool
+  }
+
+  private schedule(dueAt: number): void {
+    if (dueAt >= this.nextDue) return
+    this.nextDue = dueAt
+    this.arm()
+  }
+
+}
+
+const defaultAdvisoryLog = new AdvisoryLog()
+
+/**
+ * Why a POST /mcp/messages may not drive a session, or undefined. The poster
+ * must be the session owner's agent and hold every scope the owner opened with
+ * (`admin` covers all). A broader poster is fine: the session still runs with
+ * the owner's narrower scopes.
+ */
+export function sessionPostViolation(owner: McpAuthContext, poster: McpAuthContext): undefined | {kind: 'session-owner' | 'session-scope'; reason: string} {
+  if (poster.agentId !== owner.agentId) {
+    return {kind: 'session-owner', reason: `POST /mcp/messages identity does not match the SSE session owner (session-agent=${JSON.stringify(owner.agentId ?? null)} poster-token-agent=${JSON.stringify(poster.agentId ?? null)})`}
+  }
+
+  const posterScopes = poster.scopes ?? []
+  if (posterScopes.includes('admin')) return undefined
+  const missing = (owner.scopes ?? []).filter((scope) => !posterScopes.includes(scope))
+  if (missing.length > 0) {
+    return {kind: 'session-scope', reason: `POST /mcp/messages token lacks scope(s) the SSE session was opened with: ${missing.join(', ')}`}
+  }
+
+  return undefined
+}
+
+function enforceIdentity(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined, advisory: AdvisoryLog): void {
+  const violation = identityViolation(auth, toolName, argsAgentId)
+  if (!violation) return
+  const event: AdvisoryEvent = {declaredAgent: argsAgentId, kind: violation.kind, reason: violation.reason, route: 'tool', scope: violation.scope, tokenAgent: auth.agentId, tool: toolName}
+  if (ABSOLUTE_VIOLATIONS.has(violation.kind) || isMcpEnforceEnabled()) {
+    // N1: a refusal leaves a server-side trace, through the same deduped path.
+    advisory.emit(event, 'refused')
+    throw new McpError(MCP_FORBIDDEN_CODE, `Forbidden: ${violation.reason}`, {httpStatus: 403, kind: violation.kind, tool: toolName})
+  }
+
+  advisory.emit(event)
 }
 
 const TOOL_STORE = 'pmoves_cipher_store'
@@ -45,45 +478,74 @@ const CATEGORIES = [
   'agent_completion',
 ]
 
-export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Router {
+/**
+ * Build the /mcp router. It is constructed ONCE and shared by every caller;
+ * caller identity is read from each request (identityFromRequest), never from
+ * construction.
+ */
+export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNatsEmitter): Router {
   // eslint-disable-next-line new-cap -- express Router() is designed to be called without new
   const router = Router()
-  const transports = new Map<string, SSEServerTransport>()
+  // Each legacy-SSE session remembers the identity that opened it, so the
+  // POST /mcp/messages calls for that session run as the same agent.
+  const sessions = new Map<string, {identity: McpAuthContext; transport: SSEServerTransport}>()
+  const advisory = new AdvisoryLog()
+  logMcpAuthMode()
 
   router.get('/sse', async (req, res) => {
+    const identity = identityFromRequest(req)
     const transport = new SSEServerTransport('/mcp/messages', res)
     const {sessionId} = transport
-    transports.set(sessionId, transport)
-    const server = buildMcpServer(memoryManager, nats, auth)
+    sessions.set(sessionId, {identity, transport})
+    const server = buildMcpServer(memoryManager, nats, identity, advisory)
     await server.connect(transport)
     res.on('close', () => {
-      transports.delete(sessionId)
+      sessions.delete(sessionId)
     })
   })
 
   router.post('/messages', async (req, res) => {
     const sessionId = String(req.query.sessionId ?? '')
-    const transport = transports.get(sessionId)
-    if (!transport) {
+    const session = sessions.get(sessionId)
+    if (!session) {
       res.status(400).json({error: 'Unknown session'})
       return
     }
 
-    await transport.handlePostMessage(req, res)
+    // The session id is a capability. The session runs tools with the identity
+    // AND scopes of whoever opened the stream, so a POST must come from that
+    // same agent holding at least those scopes (F4) — otherwise a different
+    // agent, or a narrower-scoped token of the same agent, drives the session
+    // with authority it does not hold.
+    const poster = identityFromRequest(req)
+    const owner = session.identity
+    const problem = sessionPostViolation(owner, poster)
+    if (problem) {
+      const event: AdvisoryEvent = {kind: problem.kind, posterAgent: poster.agentId, reason: problem.reason, route: '/mcp/messages', sessionAgent: owner.agentId}
+      if (isMcpEnforceEnabled()) {
+        advisory.emit(event, 'refused')
+        res.status(403).json({error: `Forbidden: ${problem.reason}`})
+        return
+      }
+
+      advisory.emit(event)
+    }
+
+    await session.transport.handlePostMessage(req, res)
   })
 
   // Stateless streamable-http (POST /mcp) — the modern MCP transport. Unlike the
   // legacy SSE flow above, it keeps NO session map, so it cannot emit the
   // "Unknown session" 400 that broke Agent Zero when the SSE stream and the
   // message POST didn't share one in-process transport. Each request builds a
-  // fresh server + transport, handles the JSON-RPC message, and tears down on
-  // close. enableJsonResponse returns a plain JSON body (no SSE framing) for
-  // simple request/response clients.
+  // fresh server + transport bound to THIS request's identity, handles the
+  // JSON-RPC message, and tears down on close. enableJsonResponse returns a
+  // plain JSON body (no SSE framing) for simple request/response clients.
   router.post('/', async (req, res) => {
-    const server = buildMcpServer(memoryManager, nats)
+    const server = buildMcpServer(memoryManager, nats, identityFromRequest(req), advisory)
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
       enableJsonResponse: true,
+      sessionIdGenerator: undefined,
     })
     res.on('close', () => {
       void transport.close()
@@ -96,18 +558,7 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
   return router
 }
 
-function assertAgentId(auth: McpAuthContext, argsAgentId?: string, requiredScope?: string): void {
-  const {agentId: authAgentId, scopes: authScopes = []} = auth
-  if (authAgentId && argsAgentId !== authAgentId) {
-    throw new Error(`Forbidden: token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`)
-  }
-
-  if (requiredScope && authAgentId && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
-    throw new Error(`Forbidden: missing required scope '${requiredScope}'`)
-  }
-}
-
-function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Server {
+export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext, advisory: AdvisoryLog = defaultAdvisoryLog): Server {
 
   const server = new Server(
     {name: 'pmoves-cipher', version: '0.1.0'},
@@ -257,7 +708,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, a
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const {arguments: args = {}, name} = request.params
     const argsAgentId = (args as {agentId?: string}).agentId
-    if (argsAgentId) assertAgentId(auth, argsAgentId)
+    enforceIdentity(auth, name, argsAgentId, advisory)
 
     // ── TOOL_STORE ──────────────────────────────────────────────────────
     if (name === TOOL_STORE) {
