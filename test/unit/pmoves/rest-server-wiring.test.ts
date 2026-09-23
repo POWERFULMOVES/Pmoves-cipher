@@ -41,7 +41,9 @@ function makeMockMemoryManager(): MemoryManager {
   } as unknown as MemoryManager
 }
 
-function request(baseUrl: string, method: string, path: string, opts: {bearer?: string; body?: unknown} = {}): Promise<{body: any; status: number}> {
+// timeoutMs: a stream that is wrongly served (e.g. /mcp/sse without auth) never
+// ends; resolve as status -1 so the test fails on an assertion, not a hang.
+function request(baseUrl: string, method: string, path: string, opts: {bearer?: string; body?: unknown; timeoutMs?: number} = {}): Promise<{body: any; status: number}> {
   return new Promise((resolve, reject) => {
     const data = opts.body === undefined ? undefined : JSON.stringify(opts.body)
     const req = http.request(`${baseUrl}${path}`, {
@@ -58,7 +60,19 @@ function request(baseUrl: string, method: string, path: string, opts: {bearer?: 
         try { resolve({body: JSON.parse(buf), status: res.statusCode ?? 0}) } catch { resolve({body: buf, status: res.statusCode ?? 0}) }
       })
     })
-    req.on('error', reject)
+    req.on('error', (error) => {
+      if ((error as NodeJS.ErrnoException).code === 'ECONNRESET' && timedOut) return
+      reject(error)
+    })
+    let timedOut = false
+    if (opts.timeoutMs) {
+      req.setTimeout(opts.timeoutMs, () => {
+        timedOut = true
+        resolve({body: 'timed out waiting for a response', status: -1})
+        req.destroy()
+      })
+    }
+
     if (data) req.write(data)
     req.end()
   })
@@ -108,7 +122,8 @@ describe('F6: rest-server wiring with the real auth middleware', () => {
   })
 
   it('GET /mcp/sse without a bearer is 401', async () => {
-    expect((await request(baseUrl, 'GET', '/mcp/sse')).status).to.equal(401)
+    const r = await request(baseUrl, 'GET', '/mcp/sse', {timeoutMs: 1500})
+    expect(r.status, 'an open SSE stream here means /mcp is served without auth').to.equal(401)
   })
 
   it('a valid bearer declaring its own agent (bootstrap) is served', async () => {
