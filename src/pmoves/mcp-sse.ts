@@ -55,8 +55,10 @@ export function identityFromRequest(req: Request): McpAuthContext {
 /**
  * Scope each tool requires when a token is present; undefined = none. A
  * function (not a table) so it reads the TOOL_* constants at call time.
+ * Name and mapping match fork PR #26's `requiredScopeForTool` so the two can
+ * merge; mcp_list/mcp_get stay unmapped because no `mcp:*` scope is minted.
  */
-function requiredScopeFor(toolName: string): string | undefined {
+export function requiredScopeForTool(toolName: string): string | undefined {
   switch (toolName) {
     case TOOL_GRAPH_EXPAND:
     case TOOL_HYBRID_SEARCH:
@@ -115,7 +117,7 @@ export function identityViolation(auth: McpAuthContext, toolName: string, argsAg
     return `token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`
   }
 
-  const requiredScope = requiredScopeFor(toolName)
+  const requiredScope = requiredScopeForTool(toolName)
   if (requiredScope && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
     return `missing required scope '${requiredScope}' (token belongs to agent '${authAgentId}')`
   }
@@ -233,7 +235,7 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
   return router
 }
 
-function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext): Server {
+export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Server {
 
   const server = new Server(
     {name: 'pmoves-cipher', version: '0.1.0'},
