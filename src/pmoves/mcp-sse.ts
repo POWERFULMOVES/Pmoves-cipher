@@ -45,8 +45,43 @@ export const MCP_ENFORCE_ENV = 'CIPHER_MCP_ENFORCE'
 /** JSON-RPC server-error-range code used for authorization refusals (~ HTTP 403). */
 export const MCP_FORBIDDEN_CODE = -32_003
 
+const ENFORCE_VALUES = new Set(['1', 'enforce', 'on', 'true', 'yes'])
+const ADVISORY_VALUES = new Set(['', '0', 'advisory', 'false', 'no', 'off'])
+
+export interface McpEnforceFlag {
+  mode: 'advisory' | 'enforce'
+  raw: string | undefined
+  /** false = a value outside both lists; it falls back to advisory and is WARNed. */
+  recognised: boolean
+}
+
+/** Parse CIPHER_MCP_ENFORCE. Unknown values (`enabled`, `strict`, `2`, `"true"`) stay advisory — loudly (F2). */
+export function parseMcpEnforceFlag(raw: string | undefined): McpEnforceFlag {
+  const v = (raw ?? '').trim().toLowerCase()
+  if (ENFORCE_VALUES.has(v)) return {mode: 'enforce', raw, recognised: true}
+  return {mode: 'advisory', raw, recognised: ADVISORY_VALUES.has(v)}
+}
+
+const warnedFlagValues = new Set<string>()
+
+function warnIfUnrecognised(flag: McpEnforceFlag): void {
+  if (flag.recognised || warnedFlagValues.has(String(flag.raw))) return
+  warnedFlagValues.add(String(flag.raw))
+  process.stderr.write(`pmoves-mcp-auth: WARN unrecognised ${MCP_ENFORCE_ENV}=${JSON.stringify(flag.raw)} — staying ADVISORY. Use one of: ${[...ENFORCE_VALUES].join('|')} (enforce) or ${[...ADVISORY_VALUES].filter(Boolean).join('|')} (advisory)\n`)
+}
+
 export function isMcpEnforceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return /^(1|true|yes|on|enforce)$/i.test((env[MCP_ENFORCE_ENV] ?? '').trim())
+  const flag = parseMcpEnforceFlag(env[MCP_ENFORCE_ENV])
+  warnIfUnrecognised(flag)
+  return flag.mode === 'enforce'
+}
+
+/** Startup line: which mode the MCP identity check is in, and from what value (F2). */
+export function logMcpAuthMode(env: NodeJS.ProcessEnv = process.env): McpEnforceFlag {
+  const flag = parseMcpEnforceFlag(env[MCP_ENFORCE_ENV])
+  process.stderr.write(`pmoves-mcp-auth: mode=${flag.mode} (${MCP_ENFORCE_ENV}=${JSON.stringify(flag.raw ?? null)})\n`)
+  warnIfUnrecognised(flag)
+  return flag
 }
 
 export function identityFromRequest(req: Request): McpAuthContext {
@@ -224,6 +259,7 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
   // POST /mcp/messages calls for that session run as the same agent.
   const sessions = new Map<string, {identity: McpAuthContext; transport: SSEServerTransport}>()
   const advisory = new AdvisoryLog()
+  logMcpAuthMode()
 
   router.get('/sse', async (req, res) => {
     const identity = identityFromRequest(req)

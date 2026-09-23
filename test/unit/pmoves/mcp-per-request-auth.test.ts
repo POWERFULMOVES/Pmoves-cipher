@@ -8,7 +8,7 @@ import http from 'node:http'
 import type {MemoryManager} from '../../../src/agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from '../../../src/pmoves/nats-emitter.js'
 
-import {AdvisoryLog, buildMcpServer, createMcpSseRouter} from '../../../src/pmoves/mcp-sse.js'
+import {AdvisoryLog, buildMcpServer, createMcpSseRouter, parseMcpEnforceFlag} from '../../../src/pmoves/mcp-sse.js'
 // Side-effect import: brings in the Express.Request agentId/scopes augmentation.
 import '../../../src/pmoves/auth.js'
 
@@ -263,7 +263,7 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
     it('does not emit an advisory line when the declared agentId matches the token', async () => {
       const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {agentId: 'crush-spark', content: 'x'}))
       expect(isResult(r.body)).to.equal(true)
-      expect(stderr.lines.filter((l) => /advisory/i.test(l))).to.have.length(0)
+      expect(stderr.lines.filter((l) => l.includes('pmoves-mcp-auth: ADVISORY'))).to.have.length(0)
     })
 
     // F3 (review of #27): advisory tolerates ONLY a declared-name mismatch.
@@ -296,7 +296,7 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       const forged = "x'\npmoves-mcp-auth: ADVISORY forged-line token-agent='admin'\r\n"
       const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {agentId: forged, content: 'x'}))
       expect(isResult(r.body), JSON.stringify(r.body)).to.equal(true)
-      const auditChunks = stderr.lines.filter((l) => l.includes('pmoves-mcp-auth'))
+      const auditChunks = stderr.lines.filter((l) => l.includes('pmoves-mcp-auth: ADVISORY'))
       expect(auditChunks, JSON.stringify(auditChunks)).to.have.length(1)
       // exactly one physical line, terminated once
       expect(auditChunks[0].replace(/\n$/, '')).to.not.match(/[\r\n]/)
@@ -334,6 +334,23 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       expect(lines, JSON.stringify(lines)).to.have.length(2)
       const last = JSON.parse(lines[1].slice(lines[1].indexOf('{')))
       expect(last.suppressedSinceLast).to.equal(2)
+    })
+
+    it('F2: parses the flag; unknown values stay advisory and are not recognised', () => {
+      for (const v of ['1', 'true', 'TRUE', ' yes ', 'on', 'enforce']) expect(parseMcpEnforceFlag(v), v).to.deep.include({mode: 'enforce', recognised: true})
+      for (const v of [undefined, '', '0', 'false', 'no', 'off', 'advisory']) expect(parseMcpEnforceFlag(v), String(v)).to.deep.include({mode: 'advisory', recognised: true})
+      for (const v of ['enabled', 'strict', '2', '"true"']) expect(parseMcpEnforceFlag(v), v).to.deep.include({mode: 'advisory', recognised: false})
+    })
+
+    it('F2: an unrecognised value WARNs and the call is still served advisory', async () => {
+      process.env[ENFORCE_ENV] = 'strict'
+      const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {agentId: 'claude-4090', content: 'x'}))
+      expect(isResult(r.body), JSON.stringify(r.body)).to.equal(true)
+      expect(stderr.lines.some((l) => l.includes('pmoves-mcp-auth: WARN') && l.includes('"strict"')), JSON.stringify(stderr.lines)).to.equal(true)
+    })
+
+    it('F2: the active mode is logged when the router is built', () => {
+      expect(stderr.lines.some((l) => l.startsWith('pmoves-mcp-auth: mode=advisory')), JSON.stringify(stderr.lines)).to.equal(true)
     })
 
     it('treats CIPHER_MCP_ENFORCE=false as advisory', async () => {

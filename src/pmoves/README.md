@@ -62,11 +62,17 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache)
 > | `CIPHER_MCP_ENFORCE` | declared `agentId` ≠ token agent, `*` with a token, missing `agentId` with a token, missing scope, or `/messages` poster ≠ session owner |
 > |---|---|
 > | unset / `false` (**default, advisory**) | call proceeds; stderr gets `pmoves-mcp-auth: ADVISORY (...) token-agent='…' declared-agent='…' reason="…"` |
-> | `true` / `1` / `on` / `enforce` | refused: tool calls get McpError `-32003` (`data.httpStatus: 403`, message `Forbidden: …`); a mismatched `/messages` POST gets HTTP 403 |
+> | `true` / `1` / `yes` / `on` / `enforce` | refused: tool calls get McpError `-32003` (`data.httpStatus: 403`, message `Forbidden: …`); a mismatched `/messages` POST gets HTTP 403 |
 >
 > Scopes checked per tool: `store`→`memory:write`; `search`/`hybrid_search`/`graph_expand`→`memory:read`;
 > `store_reasoning`→`reasoning:write`; `reasoning_patterns`→`reasoning:read`; `session_save`→`session:write`;
 > `session_recall`→`session:read`; `admin` satisfies all; `mcp_list`/`mcp_get` need none.
+> **Always refused with a token, in either mode (F3):** an omitted `agentId` and `agentId: "*"` — as on REST.
+> Advisory tolerates only a declared-name mismatch (and, until enforce, a missing scope).
+> Any other flag value (`enabled`, `strict`, `2`, a quoted `"true"`) stays advisory and logs
+> `pmoves-mcp-auth: WARN unrecognised …`; the active mode is logged at startup as `pmoves-mcp-auth: mode=…`.
+> Advisory lines are single JSON objects, deduped per (token-agent, declared-agent) per
+> `CIPHER_MCP_ADVISORY_INTERVAL_MS` (default 60000) with a `suppressedSinceLast` count.
 > No token (dev-skip) → no check in either mode. The REST path (`/api/memory`) already refuses
 > mismatches unconditionally and has **no** scope check.
 
