@@ -54,6 +54,22 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache)
 > hit; it was moved onto `/mcp` in PMOVES.AI #2923). `GET /mcp/sse` + `POST /mcp/messages`
 > remain for back-compat. Both require `Authorization: Bearer ${CIPHER_API_TOKEN}`.
 
+> **MCP identity (updated 2026-09-23):** both MCP transports read the caller's identity
+> **per request** from the auth middleware (`req.agentId` / `req.scopes`) and the legacy SSE
+> flow binds it to the session, so `POST /mcp/messages` runs as whoever opened the stream.
+> `CIPHER_MCP_ENFORCE` decides what a mismatch does:
+>
+> | `CIPHER_MCP_ENFORCE` | declared `agentId` ≠ token agent, `*` with a token, missing `agentId` with a token, missing scope, or `/messages` poster ≠ session owner |
+> |---|---|
+> | unset / `false` (**default, advisory**) | call proceeds; stderr gets `pmoves-mcp-auth: ADVISORY (...) token-agent='…' declared-agent='…' reason="…"` |
+> | `true` / `1` / `on` / `enforce` | refused: tool calls get McpError `-32003` (`data.httpStatus: 403`, message `Forbidden: …`); a mismatched `/messages` POST gets HTTP 403 |
+>
+> Scopes checked per tool: `store`→`memory:write`; `search`/`hybrid_search`/`graph_expand`→`memory:read`;
+> `store_reasoning`→`reasoning:write`; `reasoning_patterns`→`reasoning:read`; `session_save`→`session:write`;
+> `session_recall`→`session:read`; `admin` satisfies all; `mcp_list`/`mcp_get` need none.
+> No token (dev-skip) → no check in either mode. The REST path (`/api/memory`) already refuses
+> mismatches unconditionally and has **no** scope check.
+
 ## NATS events emitted
 
 | Subject | When | Live subscribers |
@@ -71,7 +87,8 @@ node dist/src/pmoves/rest-server.js --port 8105 --host 0.0.0.0
 
 # Env vars
 CIPHER_API_TOKEN=<bearer>   # auth (graceful skip if unset = dev mode)
-NATS_URL=nats://nats:pmoves@nats:4222
+CIPHER_MCP_ENFORCE=false    # MCP identity: false = advisory (log mismatches), true = refuse
+NATS_URL=nats://<user>:<password>@nats:4222
 PMOVES_STORAGE_DIR=/data/cipher  # BlobStorage root
 ```
 
