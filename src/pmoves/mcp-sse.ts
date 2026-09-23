@@ -100,7 +100,7 @@ export interface IdentityViolation {
    * omitted or "*" agentId reaches sidecar.search unscoped = cross-agent read).
    * mismatch / scope: refused only under CIPHER_MCP_ENFORCE; advisory logs.
    */
-  kind: 'missing-agent' | 'mismatch' | 'scope' | 'wildcard'
+  kind: 'mismatch' | 'missing-agent' | 'scope' | 'wildcard'
   reason: string
 }
 
@@ -136,18 +136,57 @@ export function identityViolation(auth: McpAuthContext, toolName: string, argsAg
   return undefined
 }
 
-function surfaceAdvisory(detail: string): void {
-  process.stderr.write(`pmoves-mcp-auth: ADVISORY (${MCP_ENFORCE_ENV} off, accepted) ${detail}\n`)
+export const MCP_ADVISORY_INTERVAL_ENV = 'CIPHER_MCP_ADVISORY_INTERVAL_MS'
+const DEFAULT_ADVISORY_INTERVAL_MS = 60_000
+const MAX_ADVISORY_KEYS = 1000
+
+function advisoryIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env[MCP_ADVISORY_INTERVAL_ENV])
+  return Number.isFinite(n) && n >= 0 && env[MCP_ADVISORY_INTERVAL_ENV] !== '' ? n : DEFAULT_ADVISORY_INTERVAL_MS
 }
 
-function enforceIdentity(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined): void {
+/**
+ * The advisory audit trail. Two properties matter because in advisory mode this
+ * log is the ONLY output a violation produces:
+ *   F1 — every value is emitted inside one JSON object (JSON.stringify escapes
+ *        CR/LF and quotes), so a caller-supplied agentId cannot forge a second
+ *        `pmoves-mcp-auth:` line.
+ *   F7 — one line per (kind, token-agent, declared-agent) per interval
+ *        (CIPHER_MCP_ADVISORY_INTERVAL_MS, default 60s); the next line carries
+ *        how many were suppressed, so volume is bounded but nothing is hidden.
+ * The key map is capped (caller-controlled keys must not grow memory unbounded).
+ */
+export class AdvisoryLog {
+  private readonly last = new Map<string, {at: number; suppressed: number}>()
+
+  constructor(private readonly intervalMs: number = advisoryIntervalMs()) {}
+
+  emit(event: Record<string, string | undefined>): void {
+    const key = JSON.stringify([event.kind, event.route, event.tokenAgent ?? event.sessionAgent, event.declaredAgent ?? event.posterAgent])
+    const now = Date.now()
+    const prev = this.last.get(key)
+    if (prev && now - prev.at < this.intervalMs) {
+      prev.suppressed += 1
+      return
+    }
+
+    if (!prev && this.last.size >= MAX_ADVISORY_KEYS) this.last.clear()
+    this.last.set(key, {at: now, suppressed: 0})
+    const line = JSON.stringify({...event, mode: 'advisory', suppressedSinceLast: prev?.suppressed ?? 0})
+    process.stderr.write(`pmoves-mcp-auth: ADVISORY (${MCP_ENFORCE_ENV} off, accepted) ${line}\n`)
+  }
+}
+
+const defaultAdvisoryLog = new AdvisoryLog()
+
+function enforceIdentity(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined, advisory: AdvisoryLog): void {
   const violation = identityViolation(auth, toolName, argsAgentId)
   if (!violation) return
   if (ABSOLUTE_VIOLATIONS.has(violation.kind) || isMcpEnforceEnabled()) {
     throw new McpError(MCP_FORBIDDEN_CODE, `Forbidden: ${violation.reason}`, {httpStatus: 403, kind: violation.kind, tool: toolName})
   }
 
-  surfaceAdvisory(`tool=${toolName} token-agent='${auth.agentId}' declared-agent='${argsAgentId ?? '<none>'}' reason="${violation.reason}"`)
+  advisory.emit({declaredAgent: argsAgentId, kind: violation.kind, reason: violation.reason, route: 'tool', tokenAgent: auth.agentId, tool: toolName})
 }
 
 const TOOL_STORE = 'pmoves_cipher_store'
@@ -184,13 +223,14 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
   // Each legacy-SSE session remembers the identity that opened it, so the
   // POST /mcp/messages calls for that session run as the same agent.
   const sessions = new Map<string, {identity: McpAuthContext; transport: SSEServerTransport}>()
+  const advisory = new AdvisoryLog()
 
   router.get('/sse', async (req, res) => {
     const identity = identityFromRequest(req)
     const transport = new SSEServerTransport('/mcp/messages', res)
     const {sessionId} = transport
     sessions.set(sessionId, {identity, transport})
-    const server = buildMcpServer(memoryManager, nats, identity)
+    const server = buildMcpServer(memoryManager, nats, identity, advisory)
     await server.connect(transport)
     res.on('close', () => {
       sessions.delete(sessionId)
@@ -216,7 +256,7 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
         return
       }
 
-      surfaceAdvisory(`route=/mcp/messages ${detail} reason="poster identity differs from session owner"`)
+      advisory.emit({kind: 'session-owner', posterAgent: poster.agentId, reason: 'poster identity differs from session owner', route: '/mcp/messages', sessionAgent: session.identity.agentId})
     }
 
     await session.transport.handlePostMessage(req, res)
@@ -230,7 +270,7 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
   // JSON-RPC message, and tears down on close. enableJsonResponse returns a
   // plain JSON body (no SSE framing) for simple request/response clients.
   router.post('/', async (req, res) => {
-    const server = buildMcpServer(memoryManager, nats, identityFromRequest(req))
+    const server = buildMcpServer(memoryManager, nats, identityFromRequest(req), advisory)
     const transport = new StreamableHTTPServerTransport({
       enableJsonResponse: true,
       sessionIdGenerator: undefined,
@@ -246,7 +286,7 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
   return router
 }
 
-export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Server {
+export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext, advisory: AdvisoryLog = defaultAdvisoryLog): Server {
 
   const server = new Server(
     {name: 'pmoves-cipher', version: '0.1.0'},
@@ -396,7 +436,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const {arguments: args = {}, name} = request.params
     const argsAgentId = (args as {agentId?: string}).agentId
-    enforceIdentity(auth, name, argsAgentId)
+    enforceIdentity(auth, name, argsAgentId, advisory)
 
     // ── TOOL_STORE ──────────────────────────────────────────────────────
     if (name === TOOL_STORE) {

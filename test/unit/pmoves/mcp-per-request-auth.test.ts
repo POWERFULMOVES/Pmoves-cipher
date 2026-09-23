@@ -8,7 +8,7 @@ import http from 'node:http'
 import type {MemoryManager} from '../../../src/agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from '../../../src/pmoves/nats-emitter.js'
 
-import {createMcpSseRouter} from '../../../src/pmoves/mcp-sse.js'
+import {AdvisoryLog, buildMcpServer, createMcpSseRouter} from '../../../src/pmoves/mcp-sse.js'
 // Side-effect import: brings in the Express.Request agentId/scopes augmentation.
 import '../../../src/pmoves/auth.js'
 
@@ -292,6 +292,50 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       expect(isResult(r.body), JSON.stringify(r.body)).to.equal(true)
     })
 
+    it('F1: a caller-controlled agentId cannot forge a second audit line', async () => {
+      const forged = "x'\npmoves-mcp-auth: ADVISORY forged-line token-agent='admin'\r\n"
+      const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {agentId: forged, content: 'x'}))
+      expect(isResult(r.body), JSON.stringify(r.body)).to.equal(true)
+      const auditChunks = stderr.lines.filter((l) => l.includes('pmoves-mcp-auth'))
+      expect(auditChunks, JSON.stringify(auditChunks)).to.have.length(1)
+      // exactly one physical line, terminated once
+      expect(auditChunks[0].replace(/\n$/, '')).to.not.match(/[\r\n]/)
+      const json = JSON.parse(auditChunks[0].slice(auditChunks[0].indexOf('{')))
+      expect(json.declaredAgent).to.equal(forged)
+      expect(json.tokenAgent).to.equal('crush-spark')
+    })
+
+    it('F7: repeats of the same (token-agent, declared-agent) pair are deduped within the interval', async () => {
+      for (let i = 0; i < 3; i++) {
+        // eslint-disable-next-line no-await-in-loop
+        await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {agentId: 'claude-4090', content: `x${i}`}))
+      }
+
+      await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {agentId: 'hermes', content: 'y'}))
+      const lines = stderr.lines.filter((l) => l.includes('pmoves-mcp-auth: ADVISORY'))
+      expect(lines.filter((l) => l.includes('claude-4090')), JSON.stringify(lines)).to.have.length(1)
+      expect(lines.filter((l) => l.includes('hermes')), JSON.stringify(lines)).to.have.length(1)
+    })
+
+    it('F7: the next line after the interval reports how many were suppressed', () => {
+      const realNow = Date.now
+      let t = 1_000_000
+      Date.now = () => t
+      try {
+        const log = new AdvisoryLog(1000)
+        const ev = {declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'}
+        log.emit(ev)
+        t += 10; log.emit(ev)
+        t += 10; log.emit(ev)
+        t += 5000; log.emit(ev)
+      } finally { Date.now = realNow }
+
+      const lines = stderr.lines.filter((l) => l.includes('pmoves-mcp-auth: ADVISORY'))
+      expect(lines, JSON.stringify(lines)).to.have.length(2)
+      const last = JSON.parse(lines[1].slice(lines[1].indexOf('{')))
+      expect(last.suppressedSinceLast).to.equal(2)
+    })
+
     it('treats CIPHER_MCP_ENFORCE=false as advisory', async () => {
       process.env[ENFORCE_ENV] = 'false'
       const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {agentId: 'claude-4090', content: 'x'}))
@@ -408,6 +452,13 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
         const msg = await s.next(call.id as number)
         expect(isResult(msg), JSON.stringify(msg)).to.equal(true)
       } finally { s.close() }
+    })
+  })
+
+  describe('F5: buildMcpServer requires an explicit identity', () => {
+    it('omitting auth is a compile error (no silent dev-skip default)', () => {
+      // @ts-expect-error -- auth is required; a default {} would reintroduce the constant-identity defect
+      expect(() => buildMcpServer(makeMockMemoryManager(), makeMockNats())).to.be.a('function')
     })
   })
 })
