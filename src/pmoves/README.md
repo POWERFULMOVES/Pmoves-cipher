@@ -79,9 +79,11 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache)
 > `pmoves-mcp-auth: ADVISORY (…accepted) {…}` for a tolerated violation, `pmoves-mcp-auth: REFUSED {…}`
 > for every refusal, `pmoves-mcp-auth: ADVISORY-SUMMARY {"cause":"interval|cap|budget",…}` for counts.
 > Deduped per (outcome, kind, route, tool, missing scope, token-agent, declared-agent) per
-> `CIPHER_MCP_ADVISORY_INTERVAL_MS` (default 60000); suppressed counts flush on an unref'd timer and
-> before the 1000-key cap clears; at most `CIPHER_MCP_ADVISORY_BUDGET` (default 200) first-occurrence
-> lines per interval, the rest summarised.
+> `CIPHER_MCP_ADVISORY_INTERVAL_MS` (default 60000, clamped to >= 1000 with a WARN); suppressed counts
+> flush when due on an unref'd timer and before the 1000-key cap clears. At most
+> `CIPHER_MCP_ADVISORY_BUDGET` (default 200) first-occurrence lines per interval **per (outcome, token
+> agent)** — a flooding token drowns only itself, and REFUSED never shares a pool with ADVISORY; each
+> pool's overflow is summarised with a (tokenAgent, kind, tool) breakdown.
 > No token (dev-skip) → no check in either mode. The REST path (`/api/memory`) already refuses
 > mismatches unconditionally and has **no** scope check.
 
