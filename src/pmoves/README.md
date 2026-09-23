@@ -71,8 +71,17 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache)
 > Advisory tolerates only a declared-name mismatch (and, until enforce, a missing scope).
 > Any other flag value (`enabled`, `strict`, `2`, a quoted `"true"`) stays advisory and logs
 > `pmoves-mcp-auth: WARN unrecognised …`; the active mode is logged at startup as `pmoves-mcp-auth: mode=…`.
-> Advisory lines are single JSON objects, deduped per (token-agent, declared-agent) per
-> `CIPHER_MCP_ADVISORY_INTERVAL_MS` (default 60000) with a `suppressedSinceLast` count.
+> **Behaviour change in the DEFAULT mode (#27):** before #27 the MCP path checked nothing, so an
+> omitted `agentId` or `*` with a token was served. Both are now refused even with the flag unset.
+> No in-repo MCP caller relies on `*`; a client that omits `agentId` must now send its signing-card id.
+>
+> **Audit trail** (stderr, one JSON object per line, caller values escaped incl. C1/bidi/U+2028-9):
+> `pmoves-mcp-auth: ADVISORY (…accepted) {…}` for a tolerated violation, `pmoves-mcp-auth: REFUSED {…}`
+> for every refusal, `pmoves-mcp-auth: ADVISORY-SUMMARY {"cause":"interval|cap|budget",…}` for counts.
+> Deduped per (outcome, kind, route, tool, missing scope, token-agent, declared-agent) per
+> `CIPHER_MCP_ADVISORY_INTERVAL_MS` (default 60000); suppressed counts flush on an unref'd timer and
+> before the 1000-key cap clears; at most `CIPHER_MCP_ADVISORY_BUDGET` (default 200) first-occurrence
+> lines per interval, the rest summarised.
 > No token (dev-skip) → no check in either mode. The REST path (`/api/memory`) already refuses
 > mismatches unconditionally and has **no** scope check.
 
