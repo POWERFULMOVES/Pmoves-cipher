@@ -1,12 +1,16 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, no-promise-executor-return, unicorn/no-useless-undefined */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type {AddressInfo} from 'node:net'
+
 import {expect} from 'chai'
 import express from 'express'
 import http from 'node:http'
-import type {AddressInfo} from 'node:net'
 
 import type {MemoryManager} from '../../../src/agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from '../../../src/pmoves/nats-emitter.js'
+
 import {createMcpSseRouter} from '../../../src/pmoves/mcp-sse.js'
+// Side-effect import: brings in the Express.Request agentId/scopes augmentation.
+import '../../../src/pmoves/auth.js'
 
 // Identity on the MCP path must be derived PER REQUEST from what the auth
 // middleware resolved (req.agentId / req.scopes), and bound to the SSE session

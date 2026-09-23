@@ -4,8 +4,9 @@ import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/st
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  McpError,
 } from '@modelcontextprotocol/sdk/types.js'
-import {Router} from 'express'
+import {type Request, Router} from 'express'
 
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
@@ -20,6 +21,120 @@ export interface McpAuthContext {
   agentId?: string
   /** Resolved scopes from auth middleware. */
   scopes?: string[]
+}
+
+// ─── Identity enforcement ───────────────────────────────────────────────────
+// Identity on the MCP path is derived PER REQUEST from what the auth middleware
+// resolved (req.agentId / req.scopes). It is never taken from router
+// construction: the router is built once and shared by every caller, so a
+// construction-time identity would either be empty (every check skipped) or be
+// one caller's identity applied to everyone.
+//
+// CIPHER_MCP_ENFORCE (default off) selects what happens when a caller's
+// declared agentId / scopes disagree with its token:
+//   off (advisory) — the call proceeds and one `pmoves-mcp-auth: ADVISORY` line
+//                    naming token-agent vs declared-agent goes to stderr.
+//   on  (enforce)  — the call is refused with an McpError (code -32003,
+//                    data.httpStatus 403, message prefixed `Forbidden:`), the
+//                    same wording the REST path (/api/memory) returns as 403.
+// Advisory is the default so that shipping this never silently removes memory
+// access from an agent that still shares the bootstrap token.
+export const MCP_ENFORCE_ENV = 'CIPHER_MCP_ENFORCE'
+
+/** JSON-RPC server-error-range code used for authorization refusals (~ HTTP 403). */
+export const MCP_FORBIDDEN_CODE = -32_003
+
+export function isMcpEnforceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return /^(1|true|yes|on|enforce)$/i.test((env[MCP_ENFORCE_ENV] ?? '').trim())
+}
+
+export function identityFromRequest(req: Request): McpAuthContext {
+  return {agentId: req.agentId, scopes: req.scopes}
+}
+
+/**
+ * Scope each tool requires when a token is present; undefined = none. A
+ * function (not a table) so it reads the TOOL_* constants at call time.
+ */
+function requiredScopeFor(toolName: string): string | undefined {
+  switch (toolName) {
+    case TOOL_GRAPH_EXPAND:
+    case TOOL_HYBRID_SEARCH:
+    case TOOL_SEARCH: {
+      return 'memory:read'
+    }
+
+    case TOOL_REASONING_PATTERNS: {
+      return 'reasoning:read'
+    }
+
+    case TOOL_SESSION_RECALL: {
+      return 'session:read'
+    }
+
+    case TOOL_SESSION_SAVE: {
+      return 'session:write'
+    }
+
+    case TOOL_STORE: {
+      return 'memory:write'
+    }
+
+    case TOOL_STORE_REASONING: {
+      return 'reasoning:write'
+    }
+
+    default: {
+      return undefined
+    }
+  }
+}
+
+/** Tools whose agentId may be the "*" cross-agent wildcard (refused with a token, as on REST). */
+function acceptsWildcard(toolName: string): boolean {
+  return toolName === TOOL_SEARCH || toolName === TOOL_REASONING_PATTERNS
+}
+
+/**
+ * Return why a call violates its token identity, or undefined if it does not.
+ * Mirrors memory-routes.ts assertAgentId: no token -> no check (dev-skip);
+ * token present -> agentId required, "*" refused, agentId must equal the
+ * token's; plus the per-tool scope (admin satisfies any scope).
+ */
+export function identityViolation(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined): string | undefined {
+  const {agentId: authAgentId, scopes: authScopes = []} = auth
+  if (!authAgentId) return undefined
+
+  if (!argsAgentId) return `agentId is required when a token is present (token belongs to agent '${authAgentId}')`
+
+  if (argsAgentId === '*' && acceptsWildcard(toolName)) {
+    return `cross-agent wildcard search is not allowed in token enforcement mode (token belongs to agent '${authAgentId}')`
+  }
+
+  if (argsAgentId !== authAgentId) {
+    return `token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`
+  }
+
+  const requiredScope = requiredScopeFor(toolName)
+  if (requiredScope && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
+    return `missing required scope '${requiredScope}' (token belongs to agent '${authAgentId}')`
+  }
+
+  return undefined
+}
+
+function surfaceAdvisory(detail: string): void {
+  process.stderr.write(`pmoves-mcp-auth: ADVISORY (${MCP_ENFORCE_ENV} off, accepted) ${detail}\n`)
+}
+
+function enforceIdentity(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined): void {
+  const violation = identityViolation(auth, toolName, argsAgentId)
+  if (!violation) return
+  if (isMcpEnforceEnabled()) {
+    throw new McpError(MCP_FORBIDDEN_CODE, `Forbidden: ${violation}`, {httpStatus: 403, tool: toolName})
+  }
+
+  surfaceAdvisory(`tool=${toolName} token-agent='${auth.agentId}' declared-agent='${argsAgentId ?? '<none>'}' reason="${violation}"`)
 }
 
 const TOOL_STORE = 'pmoves_cipher_store'
@@ -45,42 +160,64 @@ const CATEGORIES = [
   'agent_completion',
 ]
 
-export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Router {
+/**
+ * Build the /mcp router. It is constructed ONCE and shared by every caller;
+ * caller identity is read from each request (identityFromRequest), never from
+ * construction.
+ */
+export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNatsEmitter): Router {
   // eslint-disable-next-line new-cap -- express Router() is designed to be called without new
   const router = Router()
-  const transports = new Map<string, SSEServerTransport>()
+  // Each legacy-SSE session remembers the identity that opened it, so the
+  // POST /mcp/messages calls for that session run as the same agent.
+  const sessions = new Map<string, {identity: McpAuthContext; transport: SSEServerTransport}>()
 
   router.get('/sse', async (req, res) => {
+    const identity = identityFromRequest(req)
     const transport = new SSEServerTransport('/mcp/messages', res)
     const {sessionId} = transport
-    transports.set(sessionId, transport)
-    const server = buildMcpServer(memoryManager, nats, auth)
+    sessions.set(sessionId, {identity, transport})
+    const server = buildMcpServer(memoryManager, nats, identity)
     await server.connect(transport)
     res.on('close', () => {
-      transports.delete(sessionId)
+      sessions.delete(sessionId)
     })
   })
 
   router.post('/messages', async (req, res) => {
     const sessionId = String(req.query.sessionId ?? '')
-    const transport = transports.get(sessionId)
-    if (!transport) {
+    const session = sessions.get(sessionId)
+    if (!session) {
       res.status(400).json({error: 'Unknown session'})
       return
     }
 
-    await transport.handlePostMessage(req, res)
+    // The session id is a capability: a POST carrying a DIFFERENT token
+    // identity than the one that opened the stream would otherwise act as the
+    // session owner.
+    const poster = identityFromRequest(req)
+    if (poster.agentId !== session.identity.agentId) {
+      const detail = `session-agent='${session.identity.agentId ?? '<none>'}' poster-token-agent='${poster.agentId ?? '<none>'}'`
+      if (isMcpEnforceEnabled()) {
+        res.status(403).json({error: `Forbidden: POST /mcp/messages identity does not match the SSE session owner (${detail})`})
+        return
+      }
+
+      surfaceAdvisory(`route=/mcp/messages ${detail} reason="poster identity differs from session owner"`)
+    }
+
+    await session.transport.handlePostMessage(req, res)
   })
 
   // Stateless streamable-http (POST /mcp) — the modern MCP transport. Unlike the
   // legacy SSE flow above, it keeps NO session map, so it cannot emit the
   // "Unknown session" 400 that broke Agent Zero when the SSE stream and the
   // message POST didn't share one in-process transport. Each request builds a
-  // fresh server + transport, handles the JSON-RPC message, and tears down on
-  // close. enableJsonResponse returns a plain JSON body (no SSE framing) for
-  // simple request/response clients.
+  // fresh server + transport bound to THIS request's identity, handles the
+  // JSON-RPC message, and tears down on close. enableJsonResponse returns a
+  // plain JSON body (no SSE framing) for simple request/response clients.
   router.post('/', async (req, res) => {
-    const server = buildMcpServer(memoryManager, nats)
+    const server = buildMcpServer(memoryManager, nats, identityFromRequest(req))
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -96,18 +233,7 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
   return router
 }
 
-function assertAgentId(auth: McpAuthContext, argsAgentId?: string, requiredScope?: string): void {
-  const {agentId: authAgentId, scopes: authScopes = []} = auth
-  if (authAgentId && argsAgentId !== authAgentId) {
-    throw new Error(`Forbidden: token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`)
-  }
-
-  if (requiredScope && authAgentId && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
-    throw new Error(`Forbidden: missing required scope '${requiredScope}'`)
-  }
-}
-
-function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext = {}): Server {
+function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, auth: McpAuthContext): Server {
 
   const server = new Server(
     {name: 'pmoves-cipher', version: '0.1.0'},
@@ -257,7 +383,7 @@ function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmitter, a
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const {arguments: args = {}, name} = request.params
     const argsAgentId = (args as {agentId?: string}).agentId
-    if (argsAgentId) assertAgentId(auth, argsAgentId)
+    enforceIdentity(auth, name, argsAgentId)
 
     // ── TOOL_STORE ──────────────────────────────────────────────────────
     if (name === TOOL_STORE) {

@@ -54,7 +54,11 @@ async function main(): Promise<void> {
   // SSEServerTransport.handlePostMessage() reads the raw body stream itself.
   // Auth middleware runs FIRST (reads headers only, never body), then /mcp
   // gets the raw stream + req.agentId for enforcement. Router created ONCE
-  // so the internal transports Map persists across SSE + POST requests.
+  // so the internal sessions Map persists across SSE + POST requests — which
+  // is exactly why identity is NOT passed here: the router reads req.agentId /
+  // req.scopes per request and binds them to each SSE session.
+  // Enforcement of that identity is gated by CIPHER_MCP_ENFORCE (default off =
+  // advisory: mismatches are accepted and logged). See mcp-sse.ts.
   app.use('/mcp', createMcpSseRouter(memoryManager, nats))
 
   app.use(express.json({limit: '5mb'}))
