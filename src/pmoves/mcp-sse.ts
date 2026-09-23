@@ -137,6 +137,8 @@ export interface IdentityViolation {
    */
   kind: 'mismatch' | 'missing-agent' | 'scope' | 'wildcard'
   reason: string
+  /** The missing scope, for kind 'scope'. */
+  scope?: string
 }
 
 const ABSOLUTE_VIOLATIONS = new Set<IdentityViolation['kind']>(['missing-agent', 'wildcard'])
@@ -165,50 +167,183 @@ export function identityViolation(auth: McpAuthContext, toolName: string, argsAg
 
   const requiredScope = requiredScopeForTool(toolName)
   if (requiredScope && !authScopes.includes(requiredScope) && !authScopes.includes('admin')) {
-    return {kind: 'scope', reason: `missing required scope '${requiredScope}' (token belongs to agent '${authAgentId}')`}
+    return {kind: 'scope', reason: `missing required scope '${requiredScope}' (token belongs to agent '${authAgentId}')`, scope: requiredScope}
   }
 
   return undefined
 }
 
 export const MCP_ADVISORY_INTERVAL_ENV = 'CIPHER_MCP_ADVISORY_INTERVAL_MS'
+export const MCP_ADVISORY_BUDGET_ENV = 'CIPHER_MCP_ADVISORY_BUDGET'
 const DEFAULT_ADVISORY_INTERVAL_MS = 60_000
-const MAX_ADVISORY_KEYS = 1000
+const DEFAULT_ADVISORY_BUDGET = 200
+const DEFAULT_MAX_ADVISORY_KEYS = 1000
+const CAP_SUMMARY_TOP = 20
 
-function advisoryIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
-  const n = Number(env[MCP_ADVISORY_INTERVAL_ENV])
-  return Number.isFinite(n) && n >= 0 && env[MCP_ADVISORY_INTERVAL_ENV] !== '' ? n : DEFAULT_ADVISORY_INTERVAL_MS
+function envNumber(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name]
+  const n = Number(raw)
+  return raw !== undefined && raw !== '' && Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
+// N2: JSON.stringify escapes C0 controls and quotes but passes these through
+// raw. Each can break or reorder a log line in a viewer: C1 controls (incl.
+// U+0085 NEL), U+2028/U+2029 line/paragraph separators, and every Unicode bidi
+// control (U+061C, U+200E/F, U+202A-U+202E, U+2066-U+2069).
+// Built from escapes (String.raw) so no raw separator character ever sits in this source file;
+// a literal would be rewritten to raw characters by autofix, and U+2028 inside a regex literal is a syntax error.
+// eslint-disable-next-line prefer-regex-literals
+const LOG_UNSAFE = new RegExp(String.raw`[\u0080-\u009F\u061C\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069]`, 'g')
+
+export function escapeLogJson(value: unknown): string {
+  return JSON.stringify(value).replaceAll(LOG_UNSAFE, (ch) => `\\u${ch.codePointAt(0)!.toString(16).padStart(4, '0')}`)
+}
+
+export type AuditOutcome = 'accepted' | 'refused'
+
+export interface AdvisoryEvent {
+  declaredAgent?: string
+  kind: string
+  posterAgent?: string
+  reason?: string
+  route?: string
+  scope?: string
+  sessionAgent?: string
+  tokenAgent?: string
+  tool?: string
+}
+
+export interface AdvisoryLogOptions {
+  /** Max first-occurrence lines per interval across ALL keys (F7d). */
+  budget?: number
+  intervalMs?: number
+  maxKeys?: number
+  now?: () => number
+  write?: (line: string) => void
+}
+
+interface KeyState {
+  at: number
+  event: AdvisoryEvent
+  outcome: AuditOutcome
+  suppressed: number
 }
 
 /**
- * The advisory audit trail. Two properties matter because in advisory mode this
- * log is the ONLY output a violation produces:
- *   F1 — every value is emitted inside one JSON object (JSON.stringify escapes
- *        CR/LF and quotes), so a caller-supplied agentId cannot forge a second
- *        `pmoves-mcp-auth:` line.
- *   F7 — one line per (kind, token-agent, declared-agent) per interval
- *        (CIPHER_MCP_ADVISORY_INTERVAL_MS, default 60s); the next line carries
- *        how many were suppressed, so volume is bounded but nothing is hidden.
- * The key map is capped (caller-controlled keys must not grow memory unbounded).
+ * The MCP identity audit trail. In advisory mode (the default) this log is the
+ * ONLY control, so it is built to be complete, bounded and unforgeable:
+ *
+ *   F1/N2 — each line is one JSON object; caller values cannot add a line or
+ *           reorder one (escapeLogJson).
+ *   F7a   — dedupe key = outcome, kind, route, TOOL, missing scope, token agent,
+ *           declared agent. A read-to-write escalation under the same declared
+ *           agent is a new key and gets its own line.
+ *   F7b   — hitting the key cap flushes pending suppressed counts in one
+ *           ADVISORY-SUMMARY line before the map is cleared.
+ *   F7c   — pending suppressed counts are flushed when their interval elapses by
+ *           an unref()'d timer, so burst-then-silence is still reported. A
+ *           timer (not "on the next emit") because the case that matters is the
+ *           one where nothing else is ever logged; unref() keeps it from holding
+ *           the process open.
+ *   F7d   — a global budget of first-occurrence lines per interval; beyond it
+ *           one summary line says how many were dropped, so cycling the
+ *           declared agent cannot flood the log.
+ *   N1    — refusals are logged through the same path with outcome "refused".
  */
 export class AdvisoryLog {
-  private readonly last = new Map<string, {at: number; suppressed: number}>()
+  private readonly budget: number
+  private budgetSuppressed = 0
+  private readonly intervalMs: number
+  private readonly keys = new Map<string, KeyState>()
+  private readonly maxKeys: number
+  private readonly now: () => number
+  private timer: NodeJS.Timeout | undefined
+  private windowCount = 0
+  private windowStart: number
+  private readonly write: (line: string) => void
 
-  constructor(private readonly intervalMs: number = advisoryIntervalMs()) {}
+  constructor(options: AdvisoryLogOptions | number = {}) {
+    const opts = typeof options === 'number' ? {intervalMs: options} : options
+    this.intervalMs = opts.intervalMs ?? envNumber(process.env, MCP_ADVISORY_INTERVAL_ENV, DEFAULT_ADVISORY_INTERVAL_MS)
+    this.budget = opts.budget ?? envNumber(process.env, MCP_ADVISORY_BUDGET_ENV, DEFAULT_ADVISORY_BUDGET)
+    this.maxKeys = opts.maxKeys ?? DEFAULT_MAX_ADVISORY_KEYS
+    this.now = opts.now ?? Date.now
+    this.write = opts.write ?? ((line: string) => { process.stderr.write(line) })
+    this.windowStart = this.now()
+  }
 
-  emit(event: Record<string, string | undefined>): void {
-    const key = JSON.stringify([event.kind, event.route, event.tokenAgent ?? event.sessionAgent, event.declaredAgent ?? event.posterAgent])
-    const now = Date.now()
-    const prev = this.last.get(key)
+  emit(event: AdvisoryEvent, outcome: AuditOutcome = 'accepted'): void {
+    const now = this.now()
+    this.flushDue(now)
+    const key = JSON.stringify([outcome, event.kind, event.route, event.tool, event.scope, event.tokenAgent ?? event.sessionAgent, event.declaredAgent ?? event.posterAgent])
+    const prev = this.keys.get(key)
     if (prev && now - prev.at < this.intervalMs) {
       prev.suppressed += 1
+      this.arm()
       return
     }
 
-    if (!prev && this.last.size >= MAX_ADVISORY_KEYS) this.last.clear()
-    this.last.set(key, {at: now, suppressed: 0})
-    const line = JSON.stringify({...event, mode: 'advisory', suppressedSinceLast: prev?.suppressed ?? 0})
-    process.stderr.write(`pmoves-mcp-auth: ADVISORY (${MCP_ENFORCE_ENV} off, accepted) ${line}\n`)
+    if (this.windowCount >= this.budget) {
+      this.budgetSuppressed += 1
+      this.arm()
+      return
+    }
+
+    if (!prev && this.keys.size >= this.maxKeys) this.flushForCap()
+    this.windowCount += 1
+    this.keys.set(key, {at: now, event, outcome, suppressed: 0})
+    this.line(outcome === 'accepted' ? `ADVISORY (${MCP_ENFORCE_ENV} off, accepted)` : 'REFUSED', {...event, mode: isMcpEnforceEnabled() ? 'enforce' : 'advisory', outcome, suppressedSinceLast: prev?.suppressed ?? 0})
+  }
+
+  /** Emit summaries for keys whose interval has elapsed, and roll the budget window. Called by the timer. */
+  flushDue(now: number = this.now()): void {
+    for (const state of this.keys.values()) {
+      if (state.suppressed > 0 && now - state.at >= this.intervalMs) {
+        this.line('ADVISORY-SUMMARY', {...state.event, cause: 'interval', outcome: state.outcome, suppressed: state.suppressed, windowMs: this.intervalMs})
+        state.suppressed = 0
+      }
+    }
+
+    if (now - this.windowStart >= this.intervalMs) {
+      if (this.budgetSuppressed > 0) {
+        this.line('ADVISORY-SUMMARY', {budget: this.budget, cause: 'budget', suppressed: this.budgetSuppressed, windowMs: this.intervalMs})
+      }
+
+      this.budgetSuppressed = 0
+      this.windowCount = 0
+      this.windowStart = now
+    }
+
+    if (!this.hasPending() && this.timer) {
+      clearInterval(this.timer)
+      this.timer = undefined
+    }
+  }
+
+  private arm(): void {
+    if (this.timer || this.intervalMs <= 0) return
+    this.timer = setInterval(() => this.flushDue(), this.intervalMs)
+    this.timer.unref()
+  }
+
+  private flushForCap(): void {
+    const pending = [...this.keys.values()].filter((s) => s.suppressed > 0).sort((x, y) => y.suppressed - x.suppressed)
+    if (pending.length > 0) {
+      const top = pending.slice(0, CAP_SUMMARY_TOP).map((s) => ({declaredAgent: s.event.declaredAgent ?? s.event.posterAgent, kind: s.event.kind, suppressed: s.suppressed, tokenAgent: s.event.tokenAgent ?? s.event.sessionAgent, tool: s.event.tool}))
+      this.line('ADVISORY-SUMMARY', {cause: 'cap', keys: pending.length, suppressedTotal: pending.reduce((n, s) => n + s.suppressed, 0), top})
+    }
+
+    this.keys.clear()
+  }
+
+  private hasPending(): boolean {
+    if (this.budgetSuppressed > 0) return true
+    for (const s of this.keys.values()) if (s.suppressed > 0) return true
+    return false
+  }
+
+  private line(tag: string, payload: Record<string, unknown>): void {
+    this.write(`pmoves-mcp-auth: ${tag} ${escapeLogJson(payload)}\n`)
   }
 }
 
@@ -238,11 +373,14 @@ export function sessionPostViolation(owner: McpAuthContext, poster: McpAuthConte
 function enforceIdentity(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined, advisory: AdvisoryLog): void {
   const violation = identityViolation(auth, toolName, argsAgentId)
   if (!violation) return
+  const event: AdvisoryEvent = {declaredAgent: argsAgentId, kind: violation.kind, reason: violation.reason, route: 'tool', scope: violation.scope, tokenAgent: auth.agentId, tool: toolName}
   if (ABSOLUTE_VIOLATIONS.has(violation.kind) || isMcpEnforceEnabled()) {
+    // N1: a refusal leaves a server-side trace, through the same deduped path.
+    advisory.emit(event, 'refused')
     throw new McpError(MCP_FORBIDDEN_CODE, `Forbidden: ${violation.reason}`, {httpStatus: 403, kind: violation.kind, tool: toolName})
   }
 
-  advisory.emit({declaredAgent: argsAgentId, kind: violation.kind, reason: violation.reason, route: 'tool', tokenAgent: auth.agentId, tool: toolName})
+  advisory.emit(event)
 }
 
 const TOOL_STORE = 'pmoves_cipher_store'
@@ -311,12 +449,14 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
     const owner = session.identity
     const problem = sessionPostViolation(owner, poster)
     if (problem) {
+      const event: AdvisoryEvent = {kind: problem.kind, posterAgent: poster.agentId, reason: problem.reason, route: '/mcp/messages', sessionAgent: owner.agentId}
       if (isMcpEnforceEnabled()) {
+        advisory.emit(event, 'refused')
         res.status(403).json({error: `Forbidden: ${problem.reason}`})
         return
       }
 
-      advisory.emit({kind: problem.kind, posterAgent: poster.agentId, reason: problem.reason, route: '/mcp/messages', sessionAgent: owner.agentId})
+      advisory.emit(event)
     }
 
     await session.transport.handlePostMessage(req, res)

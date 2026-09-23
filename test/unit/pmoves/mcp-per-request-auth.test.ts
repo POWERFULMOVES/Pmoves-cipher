@@ -214,6 +214,11 @@ function captureStderr(): {lines: string[]; restore(): void} {
   return {lines, restore() { (process.stderr as any).write = original }}
 }
 
+// Parse audit lines of one tag ("ADVISORY (", "ADVISORY-SUMMARY", "REFUSED") into their JSON payloads.
+function auditLines(lines: string[], tag: string): any[] {
+  return lines.filter((l) => l.startsWith(`pmoves-mcp-auth: ${tag}`)).map((l) => JSON.parse(l.slice(l.indexOf('{'))))
+}
+
 function isForbidden(msg: any): boolean {
   return Boolean(msg?.error) && /Forbidden/.test(String(msg.error.message))
 }
@@ -331,9 +336,10 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       } finally { Date.now = realNow }
 
       const lines = stderr.lines.filter((l) => l.includes('pmoves-mcp-auth: ADVISORY'))
-      expect(lines, JSON.stringify(lines)).to.have.length(2)
-      const last = JSON.parse(lines[1].slice(lines[1].indexOf('{')))
-      expect(last.suppressedSinceLast).to.equal(2)
+      expect(lines, JSON.stringify(lines)).to.have.length(3)
+      const summary = JSON.parse(lines[1].slice(lines[1].indexOf('{')))
+      expect(lines[1]).to.include('ADVISORY-SUMMARY')
+      expect(summary).to.include({cause: 'interval', suppressed: 2})
     })
 
     it('F2: parses the flag; unknown values stay advisory and are not recognised', () => {
@@ -351,6 +357,84 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
 
     it('F2: the active mode is logged when the router is built', () => {
       expect(stderr.lines.some((l) => l.startsWith('pmoves-mcp-auth: mode=advisory')), JSON.stringify(stderr.lines)).to.equal(true)
+    })
+
+    it('F7a: a read-to-write escalation under the same declared agent gets its own line', async () => {
+      await streamablePost(baseUrl, {agent: 'bootstrap'}, toolCall(SEARCH, {agentId: 'victim', query: 'q'}))
+      await streamablePost(baseUrl, {agent: 'bootstrap'}, toolCall(STORE, {agentId: 'victim', content: 'x'}))
+      await streamablePost(baseUrl, {agent: 'bootstrap'}, toolCall('pmoves_cipher_session_save', {agentId: 'victim', summary: 's'}))
+      const lines = auditLines(stderr.lines, 'ADVISORY (')
+      expect(lines.map((l) => l.tool), JSON.stringify(lines)).to.deep.equal([SEARCH, STORE, 'pmoves_cipher_session_save'])
+    })
+
+    it('F7a: different missing scopes for the same agent are separate keys', () => {
+      const sink: string[] = []
+      const log = new AdvisoryLog({intervalMs: 60_000, write: (l) => sink.push(l)})
+      log.emit({declaredAgent: 'a', kind: 'scope', scope: 'memory:read', tokenAgent: 'a', tool: SEARCH})
+      log.emit({declaredAgent: 'a', kind: 'scope', scope: 'memory:write', tokenAgent: 'a', tool: SEARCH})
+      expect(sink, JSON.stringify(sink)).to.have.length(2)
+    })
+
+    it('F7b: suppressed counts survive the key cap (flushed in one summary before clearing)', () => {
+      const sink: string[] = []
+      const log = new AdvisoryLog({intervalMs: 60_000, maxKeys: 2, write: (l) => sink.push(l)})
+      log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
+      log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
+      log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
+      log.emit({declaredAgent: 'c', kind: 'mismatch', tokenAgent: 'a'})
+      log.emit({declaredAgent: 'd', kind: 'mismatch', tokenAgent: 'a'}) // hits the cap
+      const summary = auditLines(sink, 'ADVISORY-SUMMARY').find((l) => l.cause === 'cap')
+      expect(summary, JSON.stringify(sink)).to.not.equal(undefined)
+      expect(summary.suppressedTotal).to.equal(2)
+      expect(summary.top[0]).to.include({declaredAgent: 'b', suppressed: 2})
+    })
+
+    it('F7c: burst-then-silence is reported by the interval timer (no further emit needed)', async () => {
+      const sink: string[] = []
+      const log = new AdvisoryLog({intervalMs: 40, write: (l) => sink.push(l)})
+      log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
+      log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
+      log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
+      await new Promise((r) => { setTimeout(r, 150) })
+      const summary = auditLines(sink, 'ADVISORY-SUMMARY').find((l) => l.cause === 'interval')
+      expect(summary, JSON.stringify(sink)).to.include({declaredAgent: 'b', suppressed: 2})
+    })
+
+    it('F7d: a caller cycling declaredAgent is held to the global line budget, then summarised', () => {
+      let t = 5_000_000
+      const sink: string[] = []
+      const log = new AdvisoryLog({budget: 5, intervalMs: 1000, now: () => t, write: (l) => sink.push(l)})
+      for (let i = 0; i < 20; i++) log.emit({declaredAgent: `victim-${i}`, kind: 'mismatch', tokenAgent: 'bootstrap'})
+      expect(auditLines(sink, 'ADVISORY (')).to.have.length(5)
+      t += 1500
+      log.flushDue()
+      const summary = auditLines(sink, 'ADVISORY-SUMMARY').find((l) => l.cause === 'budget')
+      expect(summary, JSON.stringify(sink)).to.include({budget: 5, suppressed: 15})
+    })
+
+    it('N1: absolute refusals are logged server-side (outcome refused, kind set) before throwing', async () => {
+      await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(SEARCH, {agentId: '*', query: 'q'}))
+      await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(SEARCH, {query: 'q'}))
+      const refused = auditLines(stderr.lines, 'REFUSED')
+      expect(refused.map((l) => l.kind), JSON.stringify(stderr.lines)).to.deep.equal(['wildcard', 'missing-agent'])
+      expect(refused[0]).to.include({outcome: 'refused', tokenAgent: 'crush-spark', tool: SEARCH})
+    })
+
+    it('N2: line separators, C1 controls and bidi controls are escaped in the audit line', () => {
+      const sink: string[] = []
+      const log = new AdvisoryLog({intervalMs: 60_000, write: (l) => sink.push(l)})
+      // Built from code points so no raw separator/bidi character sits in this source file.
+      const unsafe = [0x20_28, 0x20_29, 0x85, 0x20_2E, 0x20_66, 0x20_0F, 0x6_1C, 0x9B]
+      const probe = unsafe.map((cp, i) => `${String.fromCodePoint(97 + i)}${String.fromCodePoint(cp)}`).join('')
+      log.emit({declaredAgent: probe, kind: 'mismatch', tokenAgent: 'x'})
+      expect(sink).to.have.length(1)
+      const body = sink[0].slice(0, -1) // drop the one real terminator
+      for (const cp of unsafe) {
+        expect(body.includes(String.fromCodePoint(cp)), `raw U+${cp.toString(16)} in line`).to.equal(false)
+        expect(body).to.include(`\\u${cp.toString(16).padStart(4, '0')}`)
+      }
+
+      expect(JSON.parse(body.slice(body.indexOf('{'))).declaredAgent).to.equal(probe)
     })
 
     it('treats CIPHER_MCP_ENFORCE=false as advisory', async () => {
