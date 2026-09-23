@@ -461,6 +461,36 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       } finally { s.close() }
     })
 
+    it('F4: the same agent with a NARROWER-scoped token cannot drive the session (enforce -> 403)', async () => {
+      process.env[ENFORCE_ENV] = 'true'
+      const s = await openSse(baseUrl, {agent: 'crush-spark'})
+      try {
+        const p = await s.post({agent: 'crush-spark', scopes: ['memory:read']}, toolCall(STORE, {agentId: 'crush-spark', content: 'x'}))
+        expect(p.status, p.body).to.equal(403)
+        expect(p.body).to.include('memory:write')
+      } finally { s.close() }
+    })
+
+    it('F4: a same-agent poster holding at least the opener scopes is accepted (enforce)', async () => {
+      process.env[ENFORCE_ENV] = 'true'
+      const s = await openSse(baseUrl, {agent: 'crush-spark', scopes: ['memory:read']})
+      try {
+        const call = toolCall(SEARCH, {agentId: 'crush-spark', query: 'q'})
+        const p = await s.post({agent: 'crush-spark', scopes: ['memory:read', 'memory:write']}, call)
+        expect(p.status).to.equal(202)
+        expect(isResult(await s.next(call.id as number))).to.equal(true)
+      } finally { s.close() }
+    })
+
+    it('F4: advisory — a narrower same-agent poster is accepted but surfaced', async () => {
+      const s = await openSse(baseUrl, {agent: 'crush-spark'})
+      try {
+        const p = await s.post({agent: 'crush-spark', scopes: ['memory:read']}, toolCall(SEARCH, {agentId: 'crush-spark', query: 'q'}))
+        expect(p.status).to.equal(202)
+        expect(stderr.lines.some((l) => l.includes('session-scope')), JSON.stringify(stderr.lines)).to.equal(true)
+      } finally { s.close() }
+    })
+
     it('dev-skip SSE session (no token) works', async () => {
       const s = await openSse(baseUrl, {})
       try {

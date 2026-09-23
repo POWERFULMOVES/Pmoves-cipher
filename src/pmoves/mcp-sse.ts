@@ -214,6 +214,27 @@ export class AdvisoryLog {
 
 const defaultAdvisoryLog = new AdvisoryLog()
 
+/**
+ * Why a POST /mcp/messages may not drive a session, or undefined. The poster
+ * must be the session owner's agent and hold every scope the owner opened with
+ * (`admin` covers all). A broader poster is fine: the session still runs with
+ * the owner's narrower scopes.
+ */
+export function sessionPostViolation(owner: McpAuthContext, poster: McpAuthContext): undefined | {kind: 'session-owner' | 'session-scope'; reason: string} {
+  if (poster.agentId !== owner.agentId) {
+    return {kind: 'session-owner', reason: `POST /mcp/messages identity does not match the SSE session owner (session-agent=${JSON.stringify(owner.agentId ?? null)} poster-token-agent=${JSON.stringify(poster.agentId ?? null)})`}
+  }
+
+  const posterScopes = poster.scopes ?? []
+  if (posterScopes.includes('admin')) return undefined
+  const missing = (owner.scopes ?? []).filter((scope) => !posterScopes.includes(scope))
+  if (missing.length > 0) {
+    return {kind: 'session-scope', reason: `POST /mcp/messages token lacks scope(s) the SSE session was opened with: ${missing.join(', ')}`}
+  }
+
+  return undefined
+}
+
 function enforceIdentity(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined, advisory: AdvisoryLog): void {
   const violation = identityViolation(auth, toolName, argsAgentId)
   if (!violation) return
@@ -281,18 +302,21 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
       return
     }
 
-    // The session id is a capability: a POST carrying a DIFFERENT token
-    // identity than the one that opened the stream would otherwise act as the
-    // session owner.
+    // The session id is a capability. The session runs tools with the identity
+    // AND scopes of whoever opened the stream, so a POST must come from that
+    // same agent holding at least those scopes (F4) — otherwise a different
+    // agent, or a narrower-scoped token of the same agent, drives the session
+    // with authority it does not hold.
     const poster = identityFromRequest(req)
-    if (poster.agentId !== session.identity.agentId) {
-      const detail = `session-agent='${session.identity.agentId ?? '<none>'}' poster-token-agent='${poster.agentId ?? '<none>'}'`
+    const owner = session.identity
+    const problem = sessionPostViolation(owner, poster)
+    if (problem) {
       if (isMcpEnforceEnabled()) {
-        res.status(403).json({error: `Forbidden: POST /mcp/messages identity does not match the SSE session owner (${detail})`})
+        res.status(403).json({error: `Forbidden: ${problem.reason}`})
         return
       }
 
-      advisory.emit({kind: 'session-owner', posterAgent: poster.agentId, reason: 'poster identity differs from session owner', route: '/mcp/messages', sessionAgent: session.identity.agentId})
+      advisory.emit({kind: problem.kind, posterAgent: poster.agentId, reason: problem.reason, route: '/mcp/messages', sessionAgent: owner.agentId})
     }
 
     await session.transport.handlePostMessage(req, res)
