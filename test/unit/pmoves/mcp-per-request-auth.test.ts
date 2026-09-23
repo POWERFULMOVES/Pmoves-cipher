@@ -389,13 +389,14 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       expect(summary.top[0]).to.include({declaredAgent: 'b', suppressed: 2})
     })
 
-    it('F7c: burst-then-silence is reported by the interval timer (no further emit needed)', async () => {
+    it('F7c: burst-then-silence is reported by the interval timer (no further emit needed)', async function () {
+      this.timeout(5000)
       const sink: string[] = []
-      const log = new AdvisoryLog({intervalMs: 40, write: (l) => sink.push(l)})
+      const log = new AdvisoryLog({intervalMs: 1000, write: (l) => sink.push(l)})
       log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
       log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
       log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
-      await new Promise((r) => { setTimeout(r, 150) })
+      await new Promise((r) => { setTimeout(r, 1300) }) // B2: 1000ms is the minimum interval
       const summary = auditLines(sink, 'ADVISORY-SUMMARY').find((l) => l.cause === 'interval')
       expect(summary, JSON.stringify(sink)).to.include({declaredAgent: 'b', suppressed: 2})
     })
@@ -435,6 +436,67 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       }
 
       expect(JSON.parse(body.slice(body.indexOf('{'))).declaredAgent).to.equal(probe)
+    })
+
+    it('B1: token A flooding past its budget cannot hide token B (REFUSED * and bootstrap->victim store)', async () => {
+      // Fresh app with a small budget; the router reads CIPHER_MCP_ADVISORY_BUDGET when built.
+      const savedBudget = process.env.CIPHER_MCP_ADVISORY_BUDGET
+      process.env.CIPHER_MCP_ADVISORY_BUDGET = '3'
+      const app = await startApp()
+      try {
+        for (let i = 0; i < 8; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await streamablePost(app.baseUrl, {agent: 'flooder'}, toolCall(STORE, {agentId: `junk-${i}`, content: 'x'}))
+        }
+
+        await streamablePost(app.baseUrl, {agent: 'bootstrap'}, toolCall(SEARCH, {agentId: '*', query: 'q'}))
+        await streamablePost(app.baseUrl, {agent: 'bootstrap'}, toolCall(STORE, {agentId: 'victim', content: 'x'}))
+        await streamablePost(app.baseUrl, {agent: 'flooder'}, toolCall(SEARCH, {agentId: '*', query: 'q'}))
+        const accepted = auditLines(stderr.lines, 'ADVISORY (')
+        const refused = auditLines(stderr.lines, 'REFUSED')
+        expect(accepted.filter((l) => l.tokenAgent === 'flooder'), 'flooder is held to its own budget').to.have.length(3)
+        expect(accepted.filter((l) => l.tokenAgent === 'bootstrap' && l.declaredAgent === 'victim' && l.tool === STORE), JSON.stringify(accepted)).to.have.length(1)
+        expect(refused.filter((l) => l.tokenAgent === 'bootstrap' && l.kind === 'wildcard'), JSON.stringify(refused)).to.have.length(1)
+        expect(refused.filter((l) => l.tokenAgent === 'flooder' && l.kind === 'wildcard'), "A's own REFUSED stays visible while A's ADVISORY is over budget").to.have.length(1)
+      } finally {
+        if (savedBudget === undefined) delete process.env.CIPHER_MCP_ADVISORY_BUDGET
+        else process.env.CIPHER_MCP_ADVISORY_BUDGET = savedBudget
+        app.server.closeAllConnections()
+        await new Promise<void>((resolve) => { app.server.close(() => resolve()) })
+      }
+    })
+
+    it('B1: REFUSED has its own per-token pool, never shared with ADVISORY', () => {
+      const sink: string[] = []
+      const log = new AdvisoryLog({budget: 2, intervalMs: 60_000, write: (l) => sink.push(l)})
+      for (let i = 0; i < 5; i++) log.emit({declaredAgent: `j-${i}`, kind: 'mismatch', tokenAgent: 'a', tool: STORE})
+      for (let i = 0; i < 2; i++) log.emit({declaredAgent: `w-${i}`, kind: 'wildcard', tokenAgent: 'a', tool: SEARCH}, 'refused')
+      expect(auditLines(sink, 'ADVISORY (')).to.have.length(2)
+      expect(auditLines(sink, 'REFUSED')).to.have.length(2)
+    })
+
+    it('B1: the per-token budget summary carries a (tokenAgent, kind, tool) breakdown', () => {
+      let t = 9_000_000
+      const sink: string[] = []
+      const log = new AdvisoryLog({budget: 1, intervalMs: 1000, now: () => t, write: (l) => sink.push(l)})
+      for (let i = 0; i < 4; i++) log.emit({declaredAgent: `s-${i}`, kind: 'mismatch', tokenAgent: 'a', tool: STORE})
+      for (let i = 0; i < 2; i++) log.emit({declaredAgent: `r-${i}`, kind: 'mismatch', tokenAgent: 'a', tool: SEARCH})
+      t += 1500
+      log.flushDue()
+      const summary = auditLines(sink, 'ADVISORY-SUMMARY').find((l) => l.cause === 'budget')
+      expect(summary, JSON.stringify(sink)).to.include({outcome: 'accepted', suppressed: 5, tokenAgent: 'a'})
+      expect(summary.top).to.deep.equal([{count: 3, kind: 'mismatch', tokenAgent: 'a', tool: STORE}, {count: 2, kind: 'mismatch', tokenAgent: 'a', tool: SEARCH}])
+    })
+
+    it('B2: an interval below 1000ms is clamped, with a WARN', () => {
+      let t = 1_000_000
+      const sink: string[] = []
+      const log = new AdvisoryLog({intervalMs: 0, now: () => t, write: (l) => sink.push(l)})
+      expect(sink.some((l) => l.startsWith('pmoves-mcp-auth: WARN CIPHER_MCP_ADVISORY_INTERVAL_MS=0') && l.includes('clamped to 1000ms')), JSON.stringify(sink)).to.equal(true)
+      log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'})
+      t += 500
+      log.emit({declaredAgent: 'b', kind: 'mismatch', tokenAgent: 'a'}) // inside the clamped window: suppressed
+      expect(auditLines(sink, 'ADVISORY (')).to.have.length(1)
     })
 
     it('treats CIPHER_MCP_ENFORCE=false as advisory', async () => {

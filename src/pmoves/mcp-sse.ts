@@ -179,6 +179,8 @@ const DEFAULT_ADVISORY_INTERVAL_MS = 60_000
 const DEFAULT_ADVISORY_BUDGET = 200
 const DEFAULT_MAX_ADVISORY_KEYS = 1000
 const CAP_SUMMARY_TOP = 20
+/** B2: below this the budget window resets on (nearly) every emit and the budget stops bounding anything. */
+export const MIN_ADVISORY_INTERVAL_MS = 1000
 
 function envNumber(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   const raw = env[name]
@@ -229,47 +231,77 @@ interface KeyState {
   suppressed: number
 }
 
+/** One budget pool: the lines ONE caller (token agent) produced for ONE outcome in the current window. */
+interface BudgetPool {
+  breakdown: Map<string, {count: number; kind: string; tokenAgent?: string; tool?: string}>
+  count: number
+  outcome: AuditOutcome
+  producer: string | undefined
+  suppressed: number
+  windowStart: number
+}
+
 /**
  * The MCP identity audit trail. In advisory mode (the default) this log is the
- * ONLY control, so it is built to be complete, bounded and unforgeable:
+ * ONLY control, so it is built to be complete, bounded and unforgeable.
+ *
+ * GOVERNING RULE (B1): a suppression mechanism may only suppress lines from the
+ * caller producing the volume. Dedupe keys and budget pools both include the
+ * producing token agent, so a flooder drowns only itself.
  *
  *   F1/N2 — each line is one JSON object; caller values cannot add a line or
  *           reorder one (escapeLogJson).
  *   F7a   — dedupe key = outcome, kind, route, TOOL, missing scope, token agent,
- *           declared agent. A read-to-write escalation under the same declared
- *           agent is a new key and gets its own line.
- *   F7b   — hitting the key cap flushes pending suppressed counts in one
- *           ADVISORY-SUMMARY line before the map is cleared.
+ *           declared agent: a read-to-write escalation gets its own line.
+ *   F7b   — hitting the key (or pool) cap flushes pending suppressed counts in
+ *           one ADVISORY-SUMMARY line before the map is cleared.
  *   F7c   — pending suppressed counts are flushed when their interval elapses by
- *           an unref()'d timer, so burst-then-silence is still reported. A
- *           timer (not "on the next emit") because the case that matters is the
- *           one where nothing else is ever logged; unref() keeps it from holding
- *           the process open.
- *   F7d   — a global budget of first-occurrence lines per interval; beyond it
- *           one summary line says how many were dropped, so cycling the
- *           declared agent cannot flood the log.
+ *           an unref()'d timer, so burst-then-silence is still reported.
+ *   F7d/B1 — a budget of first-occurrence lines per interval PER (outcome, token
+ *           agent) pool: REFUSED and ADVISORY never share a pool, and one
+ *           token's flood never consumes another token's budget. Overflow is
+ *           summarised per pool with a top-N (token agent, kind, tool) breakdown.
+ *   B2    — the interval is clamped to >= MIN_ADVISORY_INTERVAL_MS, with a WARN.
+ *   B3    — flushDue returns immediately until the earliest pending item is due.
  *   N1    — refusals are logged through the same path with outcome "refused".
  */
 export class AdvisoryLog {
   private readonly budget: number
-  private budgetSuppressed = 0
   private readonly intervalMs: number
   private readonly keys = new Map<string, KeyState>()
   private readonly maxKeys: number
+  /** Earliest time any pending suppressed count becomes due; Infinity = nothing pending (B3). */
+  private nextDue = Number.POSITIVE_INFINITY
   private readonly now: () => number
+  private readonly pools = new Map<string, BudgetPool>()
   private timer: NodeJS.Timeout | undefined
-  private windowCount = 0
-  private windowStart: number
   private readonly write: (line: string) => void
 
   constructor(options: AdvisoryLogOptions | number = {}) {
     const opts = typeof options === 'number' ? {intervalMs: options} : options
-    this.intervalMs = opts.intervalMs ?? envNumber(process.env, MCP_ADVISORY_INTERVAL_ENV, DEFAULT_ADVISORY_INTERVAL_MS)
+    this.write = opts.write ?? ((line: string) => { process.stderr.write(line) })
+    const requested = opts.intervalMs ?? envNumber(process.env, MCP_ADVISORY_INTERVAL_ENV, DEFAULT_ADVISORY_INTERVAL_MS)
+    if (requested < MIN_ADVISORY_INTERVAL_MS) {
+      this.write(`pmoves-mcp-auth: WARN ${MCP_ADVISORY_INTERVAL_ENV}=${escapeLogJson(requested)} is below the minimum ${MIN_ADVISORY_INTERVAL_MS}ms — clamped to ${MIN_ADVISORY_INTERVAL_MS}ms\n`)
+    }
+
+    this.intervalMs = Math.max(requested, MIN_ADVISORY_INTERVAL_MS)
     this.budget = opts.budget ?? envNumber(process.env, MCP_ADVISORY_BUDGET_ENV, DEFAULT_ADVISORY_BUDGET)
     this.maxKeys = opts.maxKeys ?? DEFAULT_MAX_ADVISORY_KEYS
     this.now = opts.now ?? Date.now
-    this.write = opts.write ?? ((line: string) => { process.stderr.write(line) })
-    this.windowStart = this.now()
+  }
+
+  private static producer(event: AdvisoryEvent): string | undefined {
+    // The caller producing the volume: the token behind the call. On
+    // /mcp/messages that is the POSTER, not the session owner.
+    return event.route === '/mcp/messages' ? event.posterAgent : event.tokenAgent
+  }
+
+  private static resetPool(pool: BudgetPool, now: number): void {
+    pool.breakdown.clear()
+    pool.count = 0
+    pool.suppressed = 0
+    pool.windowStart = now
   }
 
   emit(event: AdvisoryEvent, outcome: AuditOutcome = 'accepted'): void {
@@ -279,51 +311,68 @@ export class AdvisoryLog {
     const prev = this.keys.get(key)
     if (prev && now - prev.at < this.intervalMs) {
       prev.suppressed += 1
-      this.arm()
+      this.schedule(prev.at + this.intervalMs)
       return
     }
 
-    if (this.windowCount >= this.budget) {
-      this.budgetSuppressed += 1
-      this.arm()
+    const pool = this.pool(outcome, AdvisoryLog.producer(event), now)
+    if (pool.count >= this.budget) {
+      pool.suppressed += 1
+      const bkey = JSON.stringify([event.tokenAgent ?? event.posterAgent, event.kind, event.tool])
+      const b = pool.breakdown.get(bkey)
+      if (b) b.count += 1
+      else pool.breakdown.set(bkey, {count: 1, kind: event.kind, tokenAgent: event.tokenAgent ?? event.posterAgent, tool: event.tool})
+      this.schedule(pool.windowStart + this.intervalMs)
       return
     }
 
     if (!prev && this.keys.size >= this.maxKeys) this.flushForCap()
-    this.windowCount += 1
+    pool.count += 1
     this.keys.set(key, {at: now, event, outcome, suppressed: 0})
     this.line(outcome === 'accepted' ? `ADVISORY (${MCP_ENFORCE_ENV} off, accepted)` : 'REFUSED', {...event, mode: isMcpEnforceEnabled() ? 'enforce' : 'advisory', outcome, suppressedSinceLast: prev?.suppressed ?? 0})
   }
 
-  /** Emit summaries for keys whose interval has elapsed, and roll the budget window. Called by the timer. */
+  /** Emit summaries for pending counts whose interval has elapsed. Called by the timer and by emit; O(1) until something is due (B3). */
   flushDue(now: number = this.now()): void {
+    if (now < this.nextDue) return
+    let next = Number.POSITIVE_INFINITY
     for (const state of this.keys.values()) {
-      if (state.suppressed > 0 && now - state.at >= this.intervalMs) {
+      if (state.suppressed === 0) continue
+      if (now - state.at >= this.intervalMs) {
         this.line('ADVISORY-SUMMARY', {...state.event, cause: 'interval', outcome: state.outcome, suppressed: state.suppressed, windowMs: this.intervalMs})
         state.suppressed = 0
+      } else {
+        next = Math.min(next, state.at + this.intervalMs)
       }
     }
 
-    if (now - this.windowStart >= this.intervalMs) {
-      if (this.budgetSuppressed > 0) {
-        this.line('ADVISORY-SUMMARY', {budget: this.budget, cause: 'budget', suppressed: this.budgetSuppressed, windowMs: this.intervalMs})
+    for (const pool of this.pools.values()) {
+      if (pool.suppressed === 0) continue
+      if (now - pool.windowStart >= this.intervalMs) {
+        this.budgetSummary(pool, 'budget')
+        AdvisoryLog.resetPool(pool, now)
+      } else {
+        next = Math.min(next, pool.windowStart + this.intervalMs)
       }
-
-      this.budgetSuppressed = 0
-      this.windowCount = 0
-      this.windowStart = now
     }
 
-    if (!this.hasPending() && this.timer) {
-      clearInterval(this.timer)
-      this.timer = undefined
-    }
+    this.nextDue = next
+    this.arm()
   }
 
+  /** (Re)arm one unref()'d timeout for the earliest due time, or clear it when nothing is pending. */
   private arm(): void {
-    if (this.timer || this.intervalMs <= 0) return
-    this.timer = setInterval(() => this.flushDue(), this.intervalMs)
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
+    if (this.nextDue === Number.POSITIVE_INFINITY) return
+    // +1ms: a timer may fire marginally before Date.now() reaches the due time.
+    this.timer = setTimeout(() => this.flushDue(), Math.max(0, this.nextDue - this.now()) + 1)
     this.timer.unref()
+  }
+
+  private budgetSummary(pool: BudgetPool, cause: 'budget' | 'pool-cap'): void {
+    const top = [...pool.breakdown.values()].sort((x, y) => y.count - x.count).slice(0, CAP_SUMMARY_TOP)
+    this.line('ADVISORY-SUMMARY', {budget: this.budget, cause, outcome: pool.outcome, suppressed: pool.suppressed, tokenAgent: pool.producer ?? null, top, windowMs: this.intervalMs})
   }
 
   private flushForCap(): void {
@@ -336,15 +385,38 @@ export class AdvisoryLog {
     this.keys.clear()
   }
 
-  private hasPending(): boolean {
-    if (this.budgetSuppressed > 0) return true
-    for (const s of this.keys.values()) if (s.suppressed > 0) return true
-    return false
-  }
-
   private line(tag: string, payload: Record<string, unknown>): void {
     this.write(`pmoves-mcp-auth: ${tag} ${escapeLogJson(payload)}\n`)
   }
+
+  private pool(outcome: AuditOutcome, producer: string | undefined, now: number): BudgetPool {
+    const pkey = JSON.stringify([outcome, producer ?? null])
+    let pool = this.pools.get(pkey)
+    if (pool && now - pool.windowStart >= this.intervalMs) {
+      if (pool.suppressed > 0) this.budgetSummary(pool, 'budget')
+      AdvisoryLog.resetPool(pool, now)
+    }
+
+    if (!pool) {
+      if (this.pools.size >= this.maxKeys) {
+        // Same discipline as the key cap (F7b): pending counts are reported, never dropped.
+        for (const p of this.pools.values()) if (p.suppressed > 0) this.budgetSummary(p, 'pool-cap')
+        this.pools.clear()
+      }
+
+      pool = {breakdown: new Map(), count: 0, outcome, producer, suppressed: 0, windowStart: now}
+      this.pools.set(pkey, pool)
+    }
+
+    return pool
+  }
+
+  private schedule(dueAt: number): void {
+    if (dueAt >= this.nextDue) return
+    this.nextDue = dueAt
+    this.arm()
+  }
+
 }
 
 const defaultAdvisoryLog = new AdvisoryLog()
