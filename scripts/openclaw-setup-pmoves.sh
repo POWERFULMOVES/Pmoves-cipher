@@ -23,6 +23,9 @@
 #                     http://pmoves-b850-ai-top:8105 -- hostnames, never literal
 #                     IPs; MagicDNS names are stable, tailnet IPs rotate)
 #   CIPHER_TOKEN    - optional Authorization: Bearer <token> if cipher auth is on
+#   CIPHER_AGENT_ID - agent identity the token belongs to (default: openclaw).
+#                     Per-agent token mode requires an agentId on every memory
+#                     call, including the preflight probe below.
 #   OPENCLAW_CONFIG - default $HOME/.openclaw/openclaw.json
 
 set -eu
@@ -31,6 +34,7 @@ set -eu
 
 CONFIG_PATH="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
 CIPHER_URL="${CIPHER_URL:-http://127.0.0.1:8105}"
+CIPHER_AGENT_ID="${CIPHER_AGENT_ID:-openclaw}"
 CIPHER_MEMORY_COLLECTION="${QDRANT_CIPHER_COLLECTION:-pmoves_cipher_memory}"
 
 # ─── Colors (respects NO_COLOR and non-terminal) ─────────────────────────────
@@ -96,7 +100,11 @@ cipher_curl() {
 
 check_cipher_api() {
   info "Probing PMOVES Cipher Memory at ${CIPHER_URL}..."
-  if cipher_curl "${CIPHER_URL}/api/memory/search?q=pmoves-setup-probe&limit=1" >/dev/null 2>&1; then
+  # agentId is mandatory on memory routes under per-agent token mode
+  # (src/pmoves/memory-routes.ts answers 400 without one), and curl -f turns
+  # that 400 into installer failure — so the probe carries the identity the
+  # token belongs to (CIPHER_AGENT_ID, default openclaw).
+  if cipher_curl "${CIPHER_URL}/api/memory/search?q=pmoves-setup-probe&limit=1&agentId=${CIPHER_AGENT_ID}" >/dev/null 2>&1; then
     success "Cipher Memory reachable at ${CIPHER_URL}"
   else
     error "Cipher Memory not reachable at ${CIPHER_URL}. Start it first:
@@ -205,6 +213,7 @@ remove_memory_flush_config() {
     const fs = require("fs");
     const configPath = process.env.CONFIG_PATH;
     try {
+        const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
         const compaction = config.agents?.defaults?.compaction;
         if (!compaction) { console.log("No memory flush config found."); process.exit(0); }
         let changed = false;
@@ -326,7 +335,7 @@ update_tools_md() {
 
 ## PMOVES Cipher (Memory)
 - **Query:**  \`curl "${CIPHER_URL}/api/memory/search?q=<topic>"\` (check existing knowledge)
-- **Store:**  \`curl -X POST "${CIPHER_URL}/api/memory" -d '{"agentId":"<agent>","category":"<cat>","content":"<text>","tags":[...]}'\`
+- **Store:**  \`curl -X POST "${CIPHER_URL}/api/memory" -H "Content-Type: application/json" -d '{"agentId":"<agent>","category":"<cat>","content":"<text>","tags":[...]}'\`
 - **Transport:** tailnet-only; biometric/medical data is excluded from this store (L14 privacy tier).
 TOOLS_EOF
   success "Updated $tools_md"
@@ -415,4 +424,13 @@ main() {
   print_success
 }
 
-main "$@"
+# Testability: the test suite sources this file and invokes functions directly
+# against a temporary config. Setting OPENCLAW_SETUP_PMOVES_SKIP_MAIN=1 skips
+# the automatic run so sourcing stays side-effect-free.
+#
+# The superseded copy spelled this OPENCLAW_SETUP_PMOLVES_SKIP_MAIN -- a third
+# transposition alongside the "pmovies" filename it lived in. Corrected here;
+# the test is repointed in the same commit, and nothing else referenced it.
+if [ "${OPENCLAW_SETUP_PMOVES_SKIP_MAIN:-0}" != "1" ]; then
+  main "$@"
+fi
