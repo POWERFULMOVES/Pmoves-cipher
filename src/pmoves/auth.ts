@@ -1,8 +1,16 @@
 import {NextFunction, Request, Response} from 'express'
 
 const TOKEN_ENV = 'CIPHER_API_TOKEN'
-const SUPABASE_REST_URL = process.env.SUPABASE_REST_URL ?? 'http://supabase-kong:8000/rest/v1'
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY ?? process.env.SERVICE_ROLE_KEY ?? ''
+
+// Read per lookup, not at import, so a missing key is reported the moment it
+// matters and each branch below is testable without re-importing the module.
+function supabaseRestUrl(): string {
+  return process.env.SUPABASE_REST_URL ?? 'http://supabase-kong:8000/rest/v1'
+}
+
+function supabaseServiceKey(): string {
+  return process.env.SUPABASE_SERVICE_KEY ?? process.env.SERVICE_ROLE_KEY ?? ''
+}
 
 // Augment Express.Request with agentId + scopes
 declare global {
@@ -34,11 +42,52 @@ interface TokenRecord {
   revoked_at: string | null
 }
 
-async function resolveToken(token: string): Promise<{agentId: string; scopes: string[]} | null> {
-  // Check cache first
+// Three outcomes, not two. `rejected` means the lookup SUCCEEDED and found no
+// active row: the token is unknown or revoked, and 401 is the truth.
+// `unavailable` means the lookup could not be performed (service key missing or
+// refused, PostgREST error, timeout): the token's validity is unknown. Folding
+// the second into the first is what made a refused service key read as
+// "invalid or revoked token" for every agent on a node at once.
+export type TokenResolution =
+  | {kind: 'rejected'}
+  | {kind: 'resolved'; agentId: string; scopes: string[]}
+  | {kind: 'unavailable'; reason: string}
+
+const UUID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
+
+// Outcome of the most recent per-agent lookup, for /health. Passive: recorded
+// as a side effect of real requests, so /health never calls PostgREST itself.
+let lastLookup: undefined | {at: number; ok: boolean; reason?: string}
+
+function recordLookup(ok: boolean, reason?: string): void {
+  lastLookup = {at: Date.now(), ok, reason}
+}
+
+export interface PerAgentAuthHealth {
+  at?: string
+  reason?: string
+  state: 'ok' | 'unavailable' | 'unknown'
+}
+
+export function perAgentAuthHealth(): PerAgentAuthHealth {
+  if (!supabaseServiceKey()) return {reason: 'SUPABASE_SERVICE_KEY not set', state: 'unavailable'}
+  if (!lastLookup) return {state: 'unknown'}
+  const at = new Date(lastLookup.at).toISOString()
+  return lastLookup.ok ? {at, state: 'ok'} : {at, reason: lastLookup.reason, state: 'unavailable'}
+}
+
+/** Test hook: forget cached tokens and the last lookup outcome. */
+export function resetPerAgentAuthState(): void {
+  tokenCache.clear()
+  lastLookup = undefined
+}
+
+export async function resolveToken(token: string): Promise<TokenResolution> {
+  // Check cache first. Only successful resolutions are cached; a failed lookup
+  // must be retried on the next request, not replayed for 60s.
   const cached = tokenCache.get(token)
   if (cached && cached.expires > Date.now()) {
-    return {agentId: cached.agentId, scopes: cached.scopes}
+    return {agentId: cached.agentId, kind: 'resolved', scopes: cached.scopes}
   }
 
   // Single-token mode: CIPHER_API_TOKEN env var (legacy / bootstrap).
@@ -46,48 +95,72 @@ async function resolveToken(token: string): Promise<{agentId: string; scopes: st
   if (!token.startsWith('cipher_')) {
     const expected = process.env[TOKEN_ENV] ?? ''
     if (token === expected && expected) {
-      return {agentId: 'bootstrap', scopes: ['memory:read', 'memory:write', 'reasoning:read', 'reasoning:write', 'session:read', 'session:write']}
+      return {agentId: 'bootstrap', kind: 'resolved', scopes: ['memory:read', 'memory:write', 'reasoning:read', 'reasoning:write', 'session:read', 'session:write']}
     }
-    return null
+
+    return {kind: 'rejected'}
   }
 
   // Per-agent token mode: strip cipher_ prefix, parse as UUID, query Supabase.
-  if (!SUPABASE_SERVICE_KEY) {
-    process.stderr.write('pmoves-auth: SUPABASE_SERVICE_KEY not set — cannot resolve per-agent tokens\n')
-    return null
-  }
-
   const uuidHex = token.slice(7) // strip "cipher_"
   // Format hex as UUID (8-4-4-4-12)
   const uuid = uuidHex.length === 32
     ? `${uuidHex.slice(0,8)}-${uuidHex.slice(8,12)}-${uuidHex.slice(12,16)}-${uuidHex.slice(16,20)}-${uuidHex.slice(20)}`
     : uuidHex // already has dashes
+  // A malformed token cannot name any row. Reject it here: sent to PostgREST it
+  // earns a 400, which would otherwise be reported as a backend fault.
+  if (!UUID_RE.test(uuid)) return {kind: 'rejected'}
+
+  const serviceKey = supabaseServiceKey()
+  if (!serviceKey) {
+    const reason = 'SUPABASE_SERVICE_KEY not set'
+    process.stderr.write(`pmoves-auth: ${reason} — cannot resolve per-agent tokens\n`)
+    recordLookup(false, reason)
+    return {kind: 'unavailable', reason}
+  }
 
   try {
     const resp = await fetch(
-      `${SUPABASE_REST_URL}/cipher_agent_tokens?token_uuid=eq.${uuid}&revoked_at=is.null&select=agent_id,scopes`,
+      `${supabaseRestUrl()}/cipher_agent_tokens?token_uuid=eq.${uuid}&revoked_at=is.null&select=agent_id,scopes`,
       {
         // cipher_agent_tokens lives in pmoves_core, not the default public
         // profile — without this header PostgREST 404s the lookup and every
         // per-agent token fails as "invalid".
-        headers: {apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, 'Accept-Profile': 'pmoves_core'},
+        headers: {apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, 'Accept-Profile': 'pmoves_core'},
         signal: AbortSignal.timeout(3000),
       },
     )
     if (!resp.ok) {
-      process.stderr.write(`pmoves-auth: Supabase token lookup returned ${resp.status}\n`)
-      return null
+      // 401/403 here is Kong/PostgREST refusing the SHIM's service key, not the
+      // caller's token.
+      const reason = `token lookup returned HTTP ${resp.status}`
+      process.stderr.write(`pmoves-auth: Supabase ${reason}\n`)
+      recordLookup(false, reason)
+      return {kind: 'unavailable', reason}
     }
+
     const records = await resp.json() as Array<{agent_id: string; scopes: string[]}>
-    if (records.length === 0) return null
+    if (!Array.isArray(records)) {
+      const reason = 'token lookup returned a non-array body'
+      process.stderr.write(`pmoves-auth: Supabase ${reason}\n`)
+      recordLookup(false, reason)
+      return {kind: 'unavailable', reason}
+    }
+
+    recordLookup(true)
+    if (records.length === 0) return {kind: 'rejected'}
 
     const record = records[0]
     const result = {agentId: record.agent_id, scopes: record.scopes ?? []}
     tokenCache.set(token, {...result, expires: Date.now() + TOKEN_CACHE_TTL_MS})
-    return result
-  } catch (e) {
-    process.stderr.write(`pmoves-auth: token resolution failed — ${e}\n`)
-    return null
+    return {...result, kind: 'resolved'}
+  } catch (error) {
+    process.stderr.write(`pmoves-auth: token resolution failed — ${error}\n`)
+    // The error name only (TimeoutError, TypeError, ...): the message can carry
+    // the internal URL, and this reason is surfaced on the public /health.
+    const reason = `token lookup failed (${error instanceof Error ? error.name : 'error'})`
+    recordLookup(false, reason)
+    return {kind: 'unavailable', reason}
   }
 }
 
@@ -118,7 +191,14 @@ export function createPmovesAuthMiddleware(options: PmovesAuthOptions = {}) {
 
     // Token provided — resolve it
     const resolved = await resolveToken(token)
-    if (!resolved) {
+    if (resolved.kind === 'unavailable') {
+      // The token was never judged. Say so: a 401 here sends the operator to
+      // re-mint a credential that is fine while the real fault is the backend.
+      res.status(503).json({error: `Service Unavailable — per-agent token lookup failed: ${resolved.reason}. Token validity could not be determined; this is not a token rejection.`})
+      return
+    }
+
+    if (resolved.kind === 'rejected') {
       res.status(401).json({error: 'Unauthorized — invalid or revoked token'})
       return
     }
