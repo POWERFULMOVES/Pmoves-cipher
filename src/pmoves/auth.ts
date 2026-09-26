@@ -147,10 +147,22 @@ export async function resolveToken(token: string): Promise<TokenResolution> {
       return {kind: 'unavailable', reason}
     }
 
-    recordLookup(true)
-    if (records.length === 0) return {kind: 'rejected'}
+    if (records.length === 0) {
+      recordLookup(true)
+      return {kind: 'rejected'}
+    }
 
     const record = records[0]
+    // A row with no agent_id would resolve to a falsy req.agentId, which the
+    // MCP identity check treats as advisory (dev-skip). Fail closed instead.
+    if (typeof record.agent_id !== 'string' || record.agent_id.trim() === '') {
+      const reason = 'token lookup returned a row with no agent_id'
+      process.stderr.write(`pmoves-auth: Supabase ${reason}\n`)
+      recordLookup(false, reason)
+      return {kind: 'unavailable', reason}
+    }
+
+    recordLookup(true)
     const result = {agentId: record.agent_id, scopes: record.scopes ?? []}
     tokenCache.set(token, {...result, expires: Date.now() + TOKEN_CACHE_TTL_MS})
     return {...result, kind: 'resolved'}

@@ -46,6 +46,22 @@ function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {headers: {'Content-Type': 'application/json'}, status})
 }
 
+// Before the format check, the token tail went unvalidated into the
+// PostgREST query URL. A '#' suffix pushed `&revoked_at=is.null` into the
+// URL fragment, which is never sent, so a REVOKED token authenticated. The
+// stub below behaves like PostgREST: it never sees the fragment, it ANDs
+// repeated filters (so an extra revoked_at filter only narrows), and it holds
+// one row that is revoked, so it answers with that row only when the
+// `revoked_at=is.null` filter did not reach it.
+function postgrestWithOneRevokedRow(): void {
+  stubFetch(async (url) => {
+    const {searchParams} = new URL(url)
+    return searchParams.getAll('revoked_at').includes('is.null')
+      ? jsonResponse(200, [])
+      : jsonResponse(200, [{agent_id: 'revoked-agent', scopes: ['memory:write']}])
+  })
+}
+
 async function call(token: string): Promise<Outcome> {
   const out: Outcome = {nextCalled: false, req: {headers: {authorization: `Bearer ${token}`}}}
   const res = {
@@ -171,7 +187,54 @@ describe('pmoves auth: a failed token lookup is not a revocation', () => {
     stubFetch(async () => jsonResponse(400, {code: '22P02'}))
     const out = await call('cipher_not-a-uuid')
     expect(out.status).to.equal(401)
+    expect(out.body?.error).to.equal('Unauthorized — invalid or revoked token')
+    expect(out.nextCalled).to.equal(false)
     expect(fetchCalls).to.have.length(0)
+  })
+
+  // The format check must keep accepting every shape the minter emits. If it
+  // were tightened to one form, the other form's holders would all get 401
+  // while every other test stayed green.
+  for (const [label, shape] of [
+    ['dashed uuid', (u: string) => u],
+    ['32-hex uppercase', (u: string) => u.replaceAll('-', '').toUpperCase()],
+    ['dashed uuid uppercase', (u: string) => u.toUpperCase()],
+  ] as Array<[string, (u: string) => string]>) {
+    it(`accepts the ${label} token form and looks it up`, async () => {
+      stubFetch(async () => jsonResponse(200, [{agent_id: 'b850-claude', scopes: []}]))
+      const out = await call(`cipher_${shape(randomUUID())}`)
+      expect(out.nextCalled).to.equal(true)
+      expect(out.req.agentId).to.equal('b850-claude')
+      expect(fetchCalls).to.have.length(1)
+    })
+  }
+
+  for (const suffix of ['#', '#&x=y', '&x=y', '?', '%23', '&revoked_at=not.is.null']) {
+    for (const [form, shape] of [
+      ['32-hex', (u: string) => u.replaceAll('-', '')],
+      ['dashed', (u: string) => u],
+    ] as Array<[string, (u: string) => string]>) {
+      it(`rejects a ${form} token with trailing ${JSON.stringify(suffix)} locally, with zero lookups`, async () => {
+        postgrestWithOneRevokedRow()
+        const out = await call(`cipher_${shape(randomUUID())}${suffix}`)
+        expect(out.nextCalled, 'a revoked token authenticated').to.equal(false)
+        expect(out.status).to.equal(401)
+        expect(out.body?.error).to.equal('Unauthorized — invalid or revoked token')
+        expect(fetchCalls).to.have.length(0)
+      })
+    }
+  }
+
+  it('fails closed (503) on a row whose agent_id is empty or whitespace', async () => {
+    for (const agentId of ['', '   ']) {
+      stubFetch(async () => jsonResponse(200, [{agent_id: agentId, scopes: ['memory:write']}]))
+      // eslint-disable-next-line no-await-in-loop
+      const out = await call(freshToken())
+      expect(out.nextCalled).to.equal(false)
+      expect(out.status).to.equal(503)
+      expect(out.body?.error).to.match(/no agent_id/)
+      expect(out.body?.error).to.not.match(/revoked/i)
+    }
   })
 
   it('still accepts the bootstrap token and rejects a wrong one with 401', async () => {
