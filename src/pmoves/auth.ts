@@ -49,8 +49,8 @@ interface TokenRecord {
 // the second into the first is what made a refused service key read as
 // "invalid or revoked token" for every agent on a node at once.
 export type TokenResolution =
+  | {agentId: string; kind: 'resolved'; scopes: string[]}
   | {kind: 'rejected'}
-  | {kind: 'resolved'; agentId: string; scopes: string[]}
   | {kind: 'unavailable'; reason: string}
 
 const UUID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
