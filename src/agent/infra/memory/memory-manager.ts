@@ -104,6 +104,7 @@ const ListMemoriesOptionsSchema = z
     offset: z.number().int().nonnegative().optional().describe('Skip first N results'),
     pinned: z.boolean().optional().describe('Filter by pinned status'),
     source: MemorySourceSchema.optional().describe('Filter by source'),
+    tags: z.array(z.string()).optional().describe('Filter by tags (memory carrying at least ONE of these tags is kept)'),
   })
   .strict()
   .describe('Options for listing memories')
@@ -456,6 +457,13 @@ export class MemoryManager {
       // Filter by pinned status
       if (validatedOptions.pinned !== undefined) {
         filtered = filtered.filter((m: Memory) => m.metadata?.pinned === validatedOptions.pinned)
+      }
+
+      // Filter by tags (ANY overlap: a memory carrying at least one listed tag is kept).
+      // Same semantics as the in-handler fallback filters in pmoves/mcp-sse.ts.
+      if (validatedOptions.tags && validatedOptions.tags.length > 0) {
+        const wanted = validatedOptions.tags
+        filtered = filtered.filter((m: Memory) => (m.tags ?? []).some((tag) => wanted.includes(tag)))
       }
 
       // Sort by updatedAt descending (most recent first)
