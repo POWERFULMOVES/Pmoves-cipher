@@ -9,7 +9,6 @@
  * never fail due to embedding infrastructure being down.
  *
  * Config (env):
- * Config (env):
  *   TENSORZERO_URL       - default http://tensorzero-gateway:3000
  *   QDRANT_URL           - default http://qdrant:6333
  *   QDRANT_API_KEY       - optional (if Qdrant requires auth)

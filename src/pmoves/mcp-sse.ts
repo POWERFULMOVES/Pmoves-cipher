@@ -804,8 +804,8 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
       } else { results = [] }
 
       if (results.length === 0) {
-        const memories = await memoryManager.list({limit: 1000, tags: ['reasoning']})
-        results = memories.filter((m) => !scopedAgentId || (m.metadata?.agentId as string) === scopedAgentId).slice(0, limit).map((m) => ({agentId: (m.metadata?.agentId as string) ?? 'unknown', category: 'reasoning', content: m.content, id: m.id}))
+        const memories = await memoryManager.list({limit: 1000})
+        results = memories.filter((m) => ((m.tags ?? []).includes('reasoning') || (m.metadata?.category as string) === 'reasoning') && (!scopedAgentId || (m.metadata?.agentId as string) === scopedAgentId)).slice(0, limit).map((m) => ({agentId: (m.metadata?.agentId as string) ?? 'unknown', category: 'reasoning', content: m.content, id: m.id}))
       }
 
       nats.emitSearched(query, results.length, 'reasoning')
@@ -850,8 +850,8 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
       } else { results = [] }
 
       if (results.length === 0) {
-        const memories = await memoryManager.list({limit: 1000, tags: ['agent_checkpoint']})
-        results = memories.filter((m) => (m.metadata?.agentId as string) === agentId).slice(0, limit).map((m) => ({activeLanes: (m.metadata?.activeLanes as string[]) ?? [], content: m.content, harness: (m.metadata?.harness as string) ?? 'unknown', id: m.id, model: (m.metadata?.model as string) ?? 'unknown', ts: (m.metadata?.ts as string) ?? new Date(m.createdAt).toISOString()}))
+        const memories = await memoryManager.list({limit: 1000})
+        results = memories.filter((m) => ((m.tags ?? []).includes('agent_checkpoint') || (m.metadata?.category as string) === 'agent_checkpoint') && (m.metadata?.agentId as string) === agentId).slice(0, limit).map((m) => ({activeLanes: (m.metadata?.activeLanes as string[]) ?? [], content: m.content, harness: (m.metadata?.harness as string) ?? 'unknown', id: m.id, model: (m.metadata?.model as string) ?? 'unknown', ts: (m.metadata?.ts as string) ?? new Date(m.createdAt).toISOString()}))
       }
 
       nats.emitSearched(query, results.length, 'agent_checkpoint')
@@ -861,6 +861,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
     // ── TOOL_HYBRID_SEARCH ──────────────────────────────────────────────
     if (name === TOOL_HYBRID_SEARCH) {
       const {agentId, query, rerank = true, topK = 5} = args as {agentId: string; query: string; rerank?: boolean; topK?: number;}
+      const scopedAgentId = agentId === '*' ? undefined : agentId
       const hirag = getHiragClient()
       const sidecar = getEmbeddingSidecar()
       const queryEmbedding = await sidecar.embed(query)
@@ -869,11 +870,11 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
         hirag.query({query, rerank, topK}),
         (async () => {
           if (!queryEmbedding) return []
-          const hits = await sidecar.search(queryEmbedding, query, topK, undefined, agentId)
+          const hits = await sidecar.search(queryEmbedding, query, topK, undefined, scopedAgentId)
           return Promise.all(hits.map(async (h) => {
             try {
               const m = await memoryManager.get(h.id)
-              return {collection: 'cipher_memory', content: m.content, metadata: {agentId, category: m.metadata?.category, id: m.id}, score: h.score, source: 'cipher'}
+              return {collection: 'cipher_memory', content: m.content, metadata: {agentId: (m.metadata?.agentId as string) ?? agentId, category: m.metadata?.category, id: m.id}, score: h.score, source: 'cipher'}
             } catch { return null }
           })).then((rs) => rs.filter((r): r is NonNullable<typeof r> => r !== null))
         })(),
