@@ -59,7 +59,7 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache)
 > flow binds it to the session, so `POST /mcp/messages` runs as whoever opened the stream.
 > `CIPHER_MCP_ENFORCE` decides what a mismatch does:
 >
-> | `CIPHER_MCP_ENFORCE` | declared `agentId` ≠ token agent, `*` with a token, missing `agentId` with a token, missing scope, or `/messages` poster ≠ session owner |
+> | `CIPHER_MCP_ENFORCE` | declared `agentId` ≠ token agent, `*` with a token, missing scope, or `/messages` poster ≠ session owner |
 > |---|---|
 > | unset / `false` (**default, advisory**) | call proceeds; stderr gets `pmoves-mcp-auth: ADVISORY (...) token-agent='…' declared-agent='…' reason="…"` |
 > | `true` / `1` / `yes` / `on` / `enforce` | refused: tool calls get McpError `-32003` (`data.httpStatus: 403`, message `Forbidden: …`); a mismatched `/messages` POST gets HTTP 403 |
@@ -67,13 +67,19 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache)
 > Scopes checked per tool: `store`→`memory:write`; `search`/`hybrid_search`/`graph_expand`→`memory:read`;
 > `store_reasoning`→`reasoning:write`; `reasoning_patterns`→`reasoning:read`; `session_save`→`session:write`;
 > `session_recall`→`session:read`; `admin` satisfies all; `mcp_list`/`mcp_get` need none.
-> **Always refused with a token, in either mode (F3):** an omitted `agentId` and `agentId: "*"` — as on REST.
+> **Always refused with a token, in either mode (F3):** `agentId: "*"`, and an omitted `agentId` on the shared
+> bootstrap token (`CIPHER_API_TOKEN`, which names no one) — as on REST.
+> **A per-agent token (`cipher_<uuid>`) IS the identity:** an omitted `agentId` is bound to the token's agent before
+> dispatch (scoped, never an unscoped read), `tools/list` drops `agentId` from `required` for that connection, and a
+> supplied value must still equal the token's agent. Unbound connections (bootstrap token, no-token dev mode) must
+> still declare `agentId`.
 > Advisory tolerates only a declared-name mismatch (and, until enforce, a missing scope).
 > Any other flag value (`enabled`, `strict`, `2`, a quoted `"true"`) stays advisory and logs
 > `pmoves-mcp-auth: WARN unrecognised …`; the active mode is logged at startup as `pmoves-mcp-auth: mode=…`.
 > **Behaviour change in the DEFAULT mode (#27):** before #27 the MCP path checked nothing, so an
 > omitted `agentId` or `*` with a token was served. Both are now refused even with the flag unset.
-> No in-repo MCP caller relies on `*`; a client that omits `agentId` must now send its signing-card id.
+> No in-repo MCP caller relies on `*`. (Superseded for per-agent tokens: an omitted `agentId` is now bound to the
+> token's agent instead of refused; only the shared bootstrap token still has to send its own.)
 >
 > **Audit trail** (stderr, one JSON object per line, caller values escaped incl. C1/bidi/U+2028-9):
 > `pmoves-mcp-auth: ADVISORY (…accepted) {…}` for a tolerated violation, `pmoves-mcp-auth: REFUSED {…}`

@@ -11,7 +11,7 @@ import {type Request, Router} from 'express'
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
 
-import './auth.js' // Express.Request agentId/scopes augmentation used by identityFromRequest
+import {isBoundAgent} from './auth.js' // also augments Express.Request with agentId/scopes (used by identityFromRequest)
 import {getEmbeddingSidecar} from './embedding.js'
 import {getGraphClient} from './graph.js'
 import {getHiragClient} from './hirag-client.js'
@@ -133,6 +133,9 @@ export interface IdentityViolation {
   /**
    * missing-agent / wildcard: refused in EVERY mode (REST parity; otherwise an
    * omitted or "*" agentId reaches sidecar.search unscoped = cross-agent read).
+   * missing-agent applies only to an UNBOUND token (the shared bootstrap one): a
+   * per-agent token names its agent, and bindAgentId() fills an omitted agentId
+   * from it before dispatch, so the call is scoped, never unscoped.
    * mismatch / scope: refused only under CIPHER_MCP_ENFORCE; advisory logs.
    */
   kind: 'mismatch' | 'missing-agent' | 'scope' | 'wildcard'
@@ -145,15 +148,16 @@ const ABSOLUTE_VIOLATIONS = new Set<IdentityViolation['kind']>(['missing-agent',
 
 /**
  * Return why a call violates its token identity, or undefined if it does not.
- * Mirrors memory-routes.ts assertAgentId: no token -> no check (dev-skip);
- * token present -> agentId required, "*" refused, agentId must equal the
- * token's; plus the per-tool scope (admin satisfies any scope).
+ * Mirrors memory-routes.ts resolveAgentId: no token -> no check (dev-skip);
+ * token present -> "*" refused, a supplied agentId must equal the token's; an
+ * omitted one is refused only for the shared bootstrap token (a per-agent token
+ * is bound by bindAgentId); plus the per-tool scope (admin satisfies any scope).
  */
 export function identityViolation(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined): IdentityViolation | undefined {
   const {agentId: authAgentId, scopes: authScopes = []} = auth
   if (!authAgentId) return undefined
 
-  if (!argsAgentId) {
+  if (!argsAgentId && !isBoundAgent(authAgentId)) {
     return {kind: 'missing-agent', reason: `agentId is required when a token is present (token belongs to agent '${authAgentId}')`}
   }
 
@@ -161,7 +165,7 @@ export function identityViolation(auth: McpAuthContext, toolName: string, argsAg
     return {kind: 'wildcard', reason: `cross-agent wildcard agentId is not allowed with a token (token belongs to agent '${authAgentId}')`}
   }
 
-  if (argsAgentId !== authAgentId) {
+  if (argsAgentId && argsAgentId !== authAgentId) {
     return {kind: 'mismatch', reason: `token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`}
   }
 
@@ -442,6 +446,18 @@ export function sessionPostViolation(owner: McpAuthContext, poster: McpAuthConte
   return undefined
 }
 
+/**
+ * A per-agent token IS the identity. When the connection carries one
+ * and the caller omitted agentId, scope the call to the token's agent.
+ * identityViolation() has already refused "*" and any non-matching value, so
+ * what reaches here is either absent or equal to the token's agent. An unbound
+ * (bootstrap/dev) connection is returned untouched: it must still declare one.
+ */
+export function bindAgentId<T extends Record<string, unknown>>(auth: McpAuthContext, args: T): T {
+  if (!isBoundAgent(auth.agentId) || args.agentId) return args
+  return {...args, agentId: auth.agentId}
+}
+
 function enforceIdentity(auth: McpAuthContext, toolName: string, argsAgentId: string | undefined, advisory: AdvisoryLog): void {
   const violation = identityViolation(auth, toolName, argsAgentId)
   if (!violation) return
@@ -565,6 +581,9 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
     {capabilities: {tools: {}}},
   )
 
+  // agentId is a required input only when the connection has no bound token to supply it.
+  const needs = (fields: string[]): string[] => (isBoundAgent(auth.agentId) ? fields : [...fields, 'agentId'])
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
@@ -576,7 +595,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             content: {type: 'string'},
             tags: {items: {type: 'string'}, type: 'array'},
           },
-          required: ['content', 'agentId'],
+          required: needs(['content']),
           type: 'object',
         },
         name: TOOL_STORE,
@@ -590,7 +609,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             limit: {type: 'number'},
             query: {type: 'string'},
           },
-          required: ['query', 'agentId'],
+          required: needs(['query']),
           type: 'object',
         },
         name: TOOL_SEARCH,
@@ -604,7 +623,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             reasoning: {type: 'string'},
             result: {type: 'string'},
           },
-          required: ['question', 'reasoning', 'result', 'agentId'],
+          required: needs(['question', 'reasoning', 'result']),
           type: 'object',
         },
         name: TOOL_STORE_REASONING,
@@ -617,7 +636,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             limit: {type: 'number'},
             query: {type: 'string'},
           },
-          required: ['query', 'agentId'],
+          required: needs(['query']),
           type: 'object',
         },
         name: TOOL_REASONING_PATTERNS,
@@ -633,7 +652,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             model: {default: 'unknown', description: 'Model powering the agent (e.g. glm-5.2, qwen3.5:35b).', type: 'string'},
             summary: {description: 'Concise summary of session work: what was done, decisions made, blockers hit, next steps.', type: 'string'},
           },
-          required: ['summary', 'agentId'],
+          required: needs(['summary']),
           type: 'object',
         },
         name: TOOL_SESSION_SAVE,
@@ -646,7 +665,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             limit: {default: 3, description: 'Max checkpoints to return.', type: 'number'},
             query: {description: 'What you are looking for (e.g. "latest state of play", "cipher agent scope PR status"). Defaults to "latest session" if omitted.', type: 'string'},
           },
-          required: ['agentId'],
+          required: needs([]),
           type: 'object',
         },
         name: TOOL_SESSION_RECALL,
@@ -660,7 +679,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             rerank: {default: true, description: 'Use cross-encoder rerank (GPU if available). Default true.', type: 'boolean'},
             topK: {default: 5, description: 'Results per source. Default 5 (10 total).', type: 'number'},
           },
-          required: ['query', 'agentId'],
+          required: needs(['query']),
           type: 'object',
         },
         name: TOOL_HYBRID_SEARCH,
@@ -673,7 +692,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             maxDepth: {default: 2, description: 'Max traversal depth (1-3). Default 2.', type: 'number'},
             memoryId: {description: 'Memory id from a prior search result.', type: 'string'},
           },
-          required: ['memoryId', 'agentId'],
+          required: needs(['memoryId']),
           type: 'object',
         },
         name: TOOL_GRAPH_EXPAND,
@@ -685,7 +704,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             agentId: {type: 'string'},
             transport: {enum: ['stdio', 'sse', 'http'], type: 'string'},
           },
-          required: ['agentId'],
+          required: needs([]),
           type: 'object',
         },
         name: TOOL_MCP_LIST,
@@ -697,7 +716,7 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
             agentId: {type: 'string'},
             name: {type: 'string'},
           },
-          required: ['name', 'agentId'],
+          required: needs(['name']),
           type: 'object',
         },
         name: TOOL_MCP_GET,
@@ -706,9 +725,10 @@ export function buildMcpServer(memoryManager: MemoryManager, nats: PmovesNatsEmi
   }))
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const {arguments: args = {}, name} = request.params
-    const argsAgentId = (args as {agentId?: string}).agentId
+    const {arguments: rawArgs = {}, name} = request.params
+    const argsAgentId = (rawArgs as {agentId?: string}).agentId
     enforceIdentity(auth, name, argsAgentId, advisory)
+    const args = bindAgentId(auth, rawArgs)
 
     // ── TOOL_STORE ──────────────────────────────────────────────────────
     if (name === TOOL_STORE) {

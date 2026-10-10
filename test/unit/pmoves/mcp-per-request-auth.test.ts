@@ -275,13 +275,49 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
     // An omitted agentId or "*" with a token is refused in every mode, as on
     // REST — otherwise session_recall / hybrid_search / graph_expand reach
     // sidecar.search(agentId=undefined), an unscoped cross-agent read.
-    it('F3: refuses an OMITTED agentId with a token even in advisory mode', async () => {
+    it('F3: an OMITTED agentId with a token is bound to the token agent, never an unscoped read', async () => {
       for (const tool of ['pmoves_cipher_session_recall', 'pmoves_cipher_hybrid_search', 'pmoves_cipher_graph_expand', SEARCH]) {
         // eslint-disable-next-line no-await-in-loop
         const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(tool, {memoryId: 'm', query: 'q'}))
+        // Not refused as a missing agent. (A tool may still error on its own inputs;
+        // what must never happen is the 403 this used to be, or an unscoped read.)
+        expect(r.body?.error?.code, `${tool}: ${JSON.stringify(r.body)}`).to.not.equal(-32_003)
+      }
+    })
+
+    it('F3: an OMITTED agentId on the SHARED bootstrap token is still refused (no identity to bind)', async () => {
+      for (const tool of ['pmoves_cipher_session_recall', 'pmoves_cipher_hybrid_search', 'pmoves_cipher_graph_expand', SEARCH, STORE]) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await streamablePost(baseUrl, {agent: 'bootstrap'}, toolCall(tool, {content: 'c', memoryId: 'm', query: 'q'}))
         expect(isForbidden(r.body), `${tool}: ${JSON.stringify(r.body)}`).to.equal(true)
         expect(r.body.error.code, tool).to.equal(-32_003)
       }
+    })
+
+    it('F3: a store with an omitted agentId files under the TOKEN agent', async () => {
+      const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(STORE, {content: 'bound by token'}))
+      expect(isResult(r.body), JSON.stringify(r.body)).to.equal(true)
+      expect(JSON.parse(r.body.result.content[0].text).agentId).to.equal('crush-spark')
+    })
+
+    it("F3: a search with an omitted agentId cannot see another agent's memory", async () => {
+      await streamablePost(baseUrl, {agent: 'claude-4090'}, toolCall(STORE, {agentId: 'claude-4090', content: 'zebra-secret-of-4090'}))
+      const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(SEARCH, {query: 'zebra-secret-of-4090'}))
+      expect(isResult(r.body), JSON.stringify(r.body)).to.equal(true)
+      expect(JSON.stringify(r.body)).to.not.include('zebra-secret-of-4090')
+    })
+
+    it('F3: an UNBOUND connection (no token agent) must still declare an agentId', async () => {
+      const r = await streamablePost(baseUrl, {}, toolCall(STORE, {content: 'no agent, no token'}))
+      expect(JSON.stringify(r.body)).to.include('agentId is required')
+    })
+
+    it('F3: tools/list drops agentId from required only for a token-bound connection', async () => {
+      const required = (body: any, tool: string): string[] => body.result.tools.find((t: any) => t.name === tool).inputSchema.required
+      const bound = await streamablePost(baseUrl, {agent: 'crush-spark'}, {id: 1, jsonrpc: '2.0', method: 'tools/list', params: {}})
+      const unbound = await streamablePost(baseUrl, {}, {id: 1, jsonrpc: '2.0', method: 'tools/list', params: {}})
+      expect(required(bound.body, STORE)).to.deep.equal(['content'])
+      expect(required(unbound.body, STORE)).to.deep.equal(['content', 'agentId'])
     })
 
     it('F3: refuses agentId "*" with a token even in advisory mode', async () => {
@@ -415,9 +451,9 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
 
     it('N1: absolute refusals are logged server-side (outcome refused, kind set) before throwing', async () => {
       await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(SEARCH, {agentId: '*', query: 'q'}))
-      await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(SEARCH, {query: 'q'}))
+      await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall(SEARCH, {query: 'q'})) // omitted: bound, not refused
       const refused = auditLines(stderr.lines, 'REFUSED')
-      expect(refused.map((l) => l.kind), JSON.stringify(stderr.lines)).to.deep.equal(['wildcard', 'missing-agent'])
+      expect(refused.map((l) => l.kind), JSON.stringify(stderr.lines)).to.deep.equal(['wildcard'])
       expect(refused[0]).to.include({outcome: 'refused', tokenAgent: 'crush-spark', tool: SEARCH})
     })
 
@@ -530,10 +566,15 @@ describe('pmoves MCP per-request identity (CIPHER_MCP_ENFORCE)', () => {
       expect(isForbidden(bAsA.body), JSON.stringify(bAsA.body)).to.equal(true)
     })
 
-    it('refuses a token-bearing call that declares no agentId (REST parity)', async () => {
-      const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall('pmoves_cipher_mcp_list', {}))
+    it('refuses a call that declares no agentId on the SHARED bootstrap token (REST parity)', async () => {
+      const r = await streamablePost(baseUrl, {agent: 'bootstrap'}, toolCall('pmoves_cipher_mcp_list', {}))
       expect(r.body.error, JSON.stringify(r.body)).to.not.equal(undefined)
       expect(String(r.body.error.message)).to.match(/agentId is required|Forbidden/)
+    })
+
+    it('serves a call that declares no agentId on a per-agent token (the token names the agent)', async () => {
+      const r = await streamablePost(baseUrl, {agent: 'crush-spark'}, toolCall('pmoves_cipher_mcp_list', {}))
+      expect(isResult(r.body), JSON.stringify(r.body)).to.equal(true)
     })
 
     it('refuses cross-agent wildcard search with a token (REST parity)', async () => {

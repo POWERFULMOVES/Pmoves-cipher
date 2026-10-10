@@ -33,6 +33,18 @@ export interface PmovesAuthOptions {
 // TTL: 60s — short enough to pick up revocations quickly, long enough to
 // avoid a PostgREST round-trip on every request.
 const TOKEN_CACHE_TTL_MS = 60_000
+/** The agent the shared node token (CIPHER_API_TOKEN, no cipher_ prefix) resolves to. It names no one. */
+export const BOOTSTRAP_AGENT_ID = 'bootstrap'
+
+/**
+ * True when agentId came from a per-agent token (cipher_<uuid>), i.e. the token
+ * itself says who is calling. The shared bootstrap token and no-token dev mode
+ * are NOT bound: they carry no identity, so the caller must declare one.
+ */
+export function isBoundAgent(agentId: string | undefined): agentId is string {
+  return Boolean(agentId) && agentId !== BOOTSTRAP_AGENT_ID
+}
+
 const tokenCache = new Map<string, {agentId: string; scopes: string[]; expires: number}>()
 
 interface TokenRecord {
@@ -95,7 +107,7 @@ export async function resolveToken(token: string): Promise<TokenResolution> {
   if (!token.startsWith('cipher_')) {
     const expected = process.env[TOKEN_ENV] ?? ''
     if (token === expected && expected) {
-      return {agentId: 'bootstrap', kind: 'resolved', scopes: ['memory:read', 'memory:write', 'reasoning:read', 'reasoning:write', 'session:read', 'session:write']}
+      return {agentId: BOOTSTRAP_AGENT_ID, kind: 'resolved', scopes: ['memory:read', 'memory:write', 'reasoning:read', 'reasoning:write', 'session:read', 'session:write']}
     }
 
     return {kind: 'rejected'}
