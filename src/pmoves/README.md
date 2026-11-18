@@ -104,6 +104,7 @@ node dist/src/pmoves/rest-server.js --port 8105 --host 0.0.0.0
 
 # Env vars
 CIPHER_API_TOKEN=<bearer>   # auth (graceful skip if unset = dev mode)
+CIPHER_AUTH_REQUIRED=true   # refuse requests with no Bearer even when CIPHER_API_TOKEN is unset (no dev mode)
 CIPHER_MCP_ENFORCE=false    # MCP identity: false = advisory (log mismatches), true = refuse
 NATS_URL=nats://<user>:<password>@nats:4222
 PMOVES_STORAGE_DIR=/data/cipher  # BlobStorage root
