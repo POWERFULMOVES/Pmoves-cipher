@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, no-return-assign, no-promise-executor-return, prefer-destructuring, unicorn/no-useless-undefined */
+/* eslint-disable @typescript-eslint/no-explicit-any, unicorn/no-useless-undefined */
 import {expect} from 'chai'
 import express from 'express'
 import http from 'node:http'
