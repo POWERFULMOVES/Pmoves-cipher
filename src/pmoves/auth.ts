@@ -24,9 +24,28 @@ declare global {
 }
 
 export interface PmovesAuthOptions {
-  /** Skip auth when token is unset (dev mode). Default: true */
+  /**
+   * Refuse every request that carries no Bearer token, whatever
+   * CIPHER_API_TOKEN holds. Default: read CIPHER_AUTH_REQUIRED per request.
+   */
+  required?: boolean
+  /** Skip auth when token is unset (dev mode). Default: true. Ignored when auth is required. */
   skipIfUnset?: boolean
 }
+
+const REQUIRED_ENV = 'CIPHER_AUTH_REQUIRED'
+const OFF_VALUES = new Set(['', '0', 'false', 'no', 'off'])
+
+// Dev mode is decided by an ABSENCE (no CIPHER_API_TOKEN), so a node whose
+// token never reached the container serves unauthenticated without saying so.
+// CIPHER_AUTH_REQUIRED turns that absence into a refusal. Any value other than
+// an explicit off value counts as on: a typo must not reopen dev mode.
+export function authRequired(): boolean {
+  const raw = (process.env[REQUIRED_ENV] ?? '').trim().toLowerCase()
+  return !OFF_VALUES.has(raw)
+}
+
+let devModeAnnounced = false
 
 // ─── Token cache ────────────────────────────────────────────────────────────
 // In-memory cache: token → {agentId, scopes, expires}
@@ -177,7 +196,7 @@ export async function resolveToken(token: string): Promise<TokenResolution> {
 }
 
 export function createPmovesAuthMiddleware(options: PmovesAuthOptions = {}) {
-  const {skipIfUnset = true} = options
+  const {required, skipIfUnset = true} = options
 
   return async function pmovesAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
     const header = req.headers.authorization ?? ''
@@ -186,10 +205,20 @@ export function createPmovesAuthMiddleware(options: PmovesAuthOptions = {}) {
 
     // No token provided
     if (!token) {
+      if (required ?? authRequired()) {
+        res.status(401).json({error: 'Unauthorized — Bearer token required'})
+        return
+      }
+
       // Check if legacy CIPHER_API_TOKEN env is set (bootstrap mode)
       const legacyToken = process.env[TOKEN_ENV] ?? ''
       if (!legacyToken && skipIfUnset) {
         // Dev mode: no token, no enforcement. Advisory agentId from tool args.
+        if (!devModeAnnounced) {
+          devModeAnnounced = true
+          process.stderr.write(`pmoves-auth: ${TOKEN_ENV} and ${REQUIRED_ENV} unset — serving unauthenticated requests (dev mode)\n`)
+        }
+
         req.agentId = undefined
         return next()
       }
