@@ -13,21 +13,21 @@
 
 export interface HiragQueryParams {
   query: string
-  topK?: number
   rerank?: boolean
+  topK?: number
 }
 
 export interface HiragResult {
-  content: string
-  score: number
   collection: string
+  content: string
   metadata?: Record<string, unknown>
+  score: number
 }
 
 interface HiragQueryRow {
   content: string
-  score: number
   metadata?: Record<string, unknown>
+  score: number
 }
 
 interface HiragQueryEnvelope {
@@ -42,37 +42,47 @@ const DEFAULT_GPU_URL = process.env.HIRAG_GPU_URL ?? HIRAG_DEFAULT_GPU_URL
 
 export class HiragClientImpl {
   private readonly cpuUrl: string
-  private readonly gpuUrl: string
   private gpuAvailable: boolean | null = null
+  private readonly gpuUrl: string
 
   constructor() {
     this.cpuUrl = DEFAULT_CPU_URL
     this.gpuUrl = DEFAULT_GPU_URL
   }
 
+  async healthCheck(): Promise<boolean> {
+    try {
+      const resp = await fetch(`${this.cpuUrl}/healthz`, {signal: AbortSignal.timeout(3000)})
+      return resp.ok
+    } catch {
+      return false
+    }
+  }
+
   async query(params: HiragQueryParams): Promise<HiragResult[]> {
-    const {query, topK = 10, rerank = true} = params
+    const {query, rerank = true, topK = 10} = params
     const url = rerank && (await this.checkGpu()) ? this.gpuUrl : this.cpuUrl
     try {
       const resp = await fetch(`${url}/hirag/query`, {
-        method: 'POST',
+        body: JSON.stringify({k: topK, query, use_rerank: rerank}),
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({query, k: topK, use_rerank: rerank}),
-        signal: AbortSignal.timeout(15000),
+        method: 'POST',
+        signal: AbortSignal.timeout(15_000),
       })
       if (!resp.ok) {
         process.stderr.write(`pmoves-hirag: HiRAG returned ${resp.status}\n`)
         return []
       }
+
       const data = await resp.json() as HiragQueryEnvelope
       // Hi-RAG v2 answers {query, k, used_rerank, rerank_provider, hits}; older
       // builds answered {results}. Accept either, and an unknown shape as empty.
       const rows = data?.hits ?? data?.results ?? []
       return rows.map((r) => ({
-        content: r.content,
-        score: r.score,
         collection: 'pmoves_chunks_qwen3',
+        content: r.content,
         metadata: r.metadata,
+        score: r.score,
       }))
     } catch (error) {
       process.stderr.write(`pmoves-hirag: query failed — ${error}\n`)
@@ -88,16 +98,8 @@ export class HiragClientImpl {
     } catch {
       this.gpuAvailable = false
     }
-    return this.gpuAvailable
-  }
 
-  async healthCheck(): Promise<boolean> {
-    try {
-      const resp = await fetch(`${this.cpuUrl}/healthz`, {signal: AbortSignal.timeout(3000)})
-      return resp.ok
-    } catch {
-      return false
-    }
+    return this.gpuAvailable
   }
 }
 
@@ -107,5 +109,6 @@ export function getHiragClient(): HiragClientImpl {
   if (!hiragInstance) {
     hiragInstance = new HiragClientImpl()
   }
+
   return hiragInstance
 }

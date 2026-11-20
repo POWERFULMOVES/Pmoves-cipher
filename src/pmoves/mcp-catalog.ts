@@ -3,28 +3,33 @@
  */
 
 export interface MCPRegistryEntry {
-  name: string
-  description: string
-  transport: 'stdio' | 'sse' | 'http'
-  endpoint?: string
   args?: string[]
+  description: string
+  endpoint?: string
   env_required?: string[]
+  name: string
   source: string
+  transport: 'http' | 'sse' | 'stdio'
 }
 
 const DEFAULT_GATEWAY_URL = process.env.GATEWAY_AGENT_URL ?? 'http://gateway-agent:8111'
 const DEFAULT_TTL = Number(process.env.MCP_CATALOG_TTL ?? 300) * 1000
 
 class MCPCatalogClientImpl {
-  private gatewayUrl: string
-  private ttlMs: number
   private cache: MCPRegistryEntry[] | null = null
   private cacheTime = 0
-  private fetching: Promise<MCPRegistryEntry[]> | null = null
+  private fetching: null | Promise<MCPRegistryEntry[]> = null
+  private gatewayUrl: string
+  private ttlMs: number
 
   constructor() {
     this.gatewayUrl = DEFAULT_GATEWAY_URL
     this.ttlMs = DEFAULT_TTL
+  }
+
+  async get(name: string): Promise<MCPRegistryEntry | null> {
+    const entries = await this.list()
+    return entries.find((e) => e.name === name) ?? null
   }
 
   async list(): Promise<MCPRegistryEntry[]> {
@@ -32,11 +37,6 @@ class MCPCatalogClientImpl {
     if (this.fetching) return this.fetching
     this.fetching = this.refresh()
     return this.fetching
-  }
-
-  async get(name: string): Promise<MCPRegistryEntry | null> {
-    const entries = await this.list()
-    return entries.find((e) => e.name === name) ?? null
   }
 
   async refresh(): Promise<MCPRegistryEntry[]> {
@@ -64,13 +64,13 @@ class MCPCatalogClientImpl {
 
   private normalizeEntry(raw: Record<string, unknown>): MCPRegistryEntry {
     return {
-      name: String(raw.name ?? raw.tool_name ?? 'unknown'),
-      description: String(raw.description ?? ''),
-      transport: (String(raw.transport ?? raw.type ?? 'stdio') as 'stdio' | 'sse' | 'http'),
-      endpoint: raw.endpoint ? String(raw.endpoint) : raw.url ? String(raw.url) : raw.command ? String(raw.command) : undefined,
       args: Array.isArray(raw.args) ? (raw.args as string[]) : undefined,
+      description: String(raw.description ?? ''),
+      endpoint: raw.endpoint ? String(raw.endpoint) : raw.url ? String(raw.url) : raw.command ? String(raw.command) : undefined,
       env_required: Array.isArray(raw.env_required) ? (raw.env_required as string[]) : undefined,
+      name: String(raw.name ?? raw.tool_name ?? 'unknown'),
       source: 'gateway-agent',
+      transport: (String(raw.transport ?? raw.type ?? 'stdio') as 'http' | 'sse' | 'stdio'),
     }
   }
 }

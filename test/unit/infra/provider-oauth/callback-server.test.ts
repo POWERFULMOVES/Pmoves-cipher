@@ -46,7 +46,7 @@ describe('ProviderCallbackServer', () => {
 
       const callbackPromise = server.waitForCallback('test-state', 5000)
 
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+       
       await fetch(`http://localhost:${port}/auth/callback?code=auth-code&state=test-state`)
 
       const result = await callbackPromise
@@ -61,7 +61,7 @@ describe('ProviderCallbackServer', () => {
 
       const callbackPromise = server.waitForCallback('test-state', 5000)
 
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+       
       await fetch(`http://localhost:${port}/auth/callback?code=auth-code&state=test-state`)
 
       await callbackPromise
@@ -114,7 +114,7 @@ describe('ProviderCallbackServer', () => {
 
       const callbackPromise = server.waitForCallback('expected-state', 5000).catch((error: Error) => error)
 
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+       
       await fetch(`http://localhost:${port}/auth/callback?code=auth-code&state=wrong-state`)
 
       const error = await callbackPromise
@@ -127,7 +127,7 @@ describe('ProviderCallbackServer', () => {
 
       const callbackPromise = server.waitForCallback('test-state', 5000).catch((error: Error) => error)
 
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+       
       await fetch(`http://localhost:${port}/auth/callback?error=access_denied&error_description=User+denied+access`)
 
       const error = await callbackPromise
@@ -144,7 +144,7 @@ describe('ProviderCallbackServer', () => {
 
       const callbackPromise = server.waitForCallback('test-state', 5000).catch((error: Error) => error)
 
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+       
       await fetch(`http://localhost:${port}/auth/callback?error=server_error`)
 
       const error = await callbackPromise
@@ -160,7 +160,7 @@ describe('ProviderCallbackServer', () => {
 
       const callbackPromise = server.waitForCallback('test-state', 5000).catch((error: Error) => error)
 
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+       
       const response = await fetch(`http://localhost:${port}/auth/callback?code=auth-code`)
 
       expect(response.status).to.equal(400)
@@ -177,7 +177,7 @@ describe('ProviderCallbackServer', () => {
 
       const callbackPromise = server.waitForCallback('test-state', 5000)
 
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+       
       await fetch(`http://localhost:${port}/custom/path?code=auth-code&state=test-state`)
 
       const result = await callbackPromise
@@ -188,7 +188,7 @@ describe('ProviderCallbackServer', () => {
       server = new ProviderCallbackServer({port: 0})
       const port = await server.start()
 
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+       
       const response = await fetch(`http://localhost:${port}/wrong/path`)
       expect(response.status).to.equal(404)
     })
@@ -211,7 +211,7 @@ describe('ProviderCallbackServer', () => {
       server = new ProviderCallbackServer({port: 0})
       const port = await server.start()
 
-      // eslint-disable-next-line n/no-unsupported-features/node-builtins
+       
       const fetchPromise = fetch(`http://localhost:${port}/auth/callback?code=test-code&state=test-state`)
 
       await new Promise((resolve) => {

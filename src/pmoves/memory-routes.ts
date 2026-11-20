@@ -1,4 +1,4 @@
-/* eslint-disable camelcase -- REST API response fields match the Postgres DB schema (snake_case convention) */
+ 
 import express, {Router} from 'express'
 
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
@@ -27,7 +27,7 @@ function assertAgentId(req: express.Request, argsAgentId?: string, allowWildcard
 }
 
 export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNatsEmitter): Router {
-  // eslint-disable-next-line new-cap -- express Router() is designed to be called without new
+   
   const router = Router()
   const sidecar = getEmbeddingSidecar()
 

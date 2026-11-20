@@ -25,9 +25,9 @@ function shAvailable(): boolean {
 }
 
 interface RunResult {
-  status: number | null;
-  stdout: string;
+  status: null | number;
   stderr: string;
+  stdout: string;
 }
 
 function runInSh(snippet: string, env: Record<string, string> = {}): RunResult {
@@ -35,28 +35,28 @@ function runInSh(snippet: string, env: Record<string, string> = {}): RunResult {
     encoding: "utf8",
     env: {
       ...process.env,
-      OPENCLAW_SETUP_PMOVES_SKIP_MAIN: "1",
       NO_COLOR: "1",
+      OPENCLAW_SETUP_PMOVES_SKIP_MAIN: "1",
       SETUP_SCRIPT: SCRIPT,
       ...env,
     },
   });
-  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  return { status: r.status, stderr: r.stderr ?? "", stdout: r.stdout ?? "" };
 }
 
-describe("openclaw-setup-pmoves.sh", function () {
+describe("openclaw-setup-pmoves.sh", () => {
   before(function () {
     if (!shAvailable()) {
       this.skip();
     }
   });
 
-  it("passes sh -n syntax check", function () {
+  it("passes sh -n syntax check", () => {
     const r = spawnSync("sh", ["-n", SCRIPT], { encoding: "utf8" });
     assert.strictEqual(r.status, 0, r.stderr);
   });
 
-  it("disable path parses the config instead of throwing ReferenceError", function () {
+  it("disable path parses the config instead of throwing ReferenceError", () => {
     // Reviewed defect: remove_memory_flush_config read config.agents without
     // ever parsing the file, so declining the memory-flush prompt (including
     // the default Enter) aborted the whole installer under set -e.
@@ -69,8 +69,8 @@ describe("openclaw-setup-pmoves.sh", function () {
           agents: {
             defaults: {
               compaction: {
-                reserveTokensFloor: 50000,
                 memoryFlush: { enabled: true, softThresholdTokens: 4000 },
+                reserveTokensFloor: 50_000,
               },
             },
           },
@@ -90,11 +90,11 @@ describe("openclaw-setup-pmoves.sh", function () {
       // the now-empty compaction block is cleaned up too
       assert.strictEqual(after.agents.defaults.compaction, undefined);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { force: true, recursive: true });
     }
   });
 
-  it("authenticated preflight probe carries the agent identity", function () {
+  it("authenticated preflight probe carries the agent identity", () => {
     // Reviewed defect: with CIPHER_TOKEN set, memory routes answer 400 for a
     // search without agentId, and curl -f turned that into installer failure.
     const dir = mkdtempSync(join(tmpdir(), "openclaw-probe-"));
@@ -104,11 +104,11 @@ describe("openclaw-setup-pmoves.sh", function () {
       writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$@" >> "$CURL_LOG"\nexit 0\n`);
       chmodSync(stub, 0o755);
       const r = runInSh(`. "$SETUP_SCRIPT"; check_cipher_api`, {
-        PATH: `${dir}:${process.env.PATH ?? ""}`,
-        CURL_LOG: log,
-        CIPHER_URL: "http://127.0.0.1:8105",
-        CIPHER_TOKEN: "cipher_testtoken",
         CIPHER_AGENT_ID: "opal",
+        CIPHER_TOKEN: "cipher_testtoken",
+        CIPHER_URL: "http://127.0.0.1:8105",
+        CURL_LOG: log,
+        PATH: `${dir}:${process.env.PATH ?? ""}`,
       });
       assert.strictEqual(
         r.status,
@@ -119,11 +119,11 @@ describe("openclaw-setup-pmoves.sh", function () {
       assert.match(captured, /agentId=opal/, `probe URL lacks agentId:\n${captured}`);
       assert.match(captured, /Authorization: Bearer cipher_testtoken/);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { force: true, recursive: true });
     }
   });
 
-  it("generated Store command sends JSON content type", function () {
+  it("generated Store command sends JSON content type", () => {
     // Reviewed defect: curl -d defaults to form-urlencoded and express.json()
     // only parses JSON, so the workspace TOOLS.md Store command 400'd.
     const dir = mkdtempSync(join(tmpdir(), "openclaw-tools-"));
@@ -138,8 +138,8 @@ describe("openclaw-setup-pmoves.sh", function () {
       // exist in this repo, so no PR here has ever run the suite.
       writeFileSync(toolsMd, "# TOOLS\n\nExisting workspace tools doc.\n");
       const r = runInSh(`. "$SETUP_SCRIPT"; update_tools_md "$TOOLS_PATH"`, {
-        TOOLS_PATH: toolsMd,
         CIPHER_URL: "http://127.0.0.1:8105",
+        TOOLS_PATH: toolsMd,
       });
       assert.strictEqual(r.status, 0, r.stderr);
       const body = readFileSync(toolsMd, "utf8");
@@ -147,7 +147,7 @@ describe("openclaw-setup-pmoves.sh", function () {
       assert.ok(storeLine, "Store command missing from generated TOOLS.md");
       assert.match(storeLine, /-H "Content-Type: application\/json"/);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { force: true, recursive: true });
     }
   });
 });

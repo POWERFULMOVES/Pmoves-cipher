@@ -23,6 +23,24 @@ export default [
       },
     },
   },
+  // Node built-ins availability is governed by the shipped Docker image, not
+  // the oclif engines range; the runtime (Node 20+) provides global fetch.
+  {
+    files: ['src/**/*.ts', 'test/**/*.ts'],
+    rules: {
+      'n/no-unsupported-features/node-builtins': 'off',
+    },
+  },
+  // The PMOVES shim speaks snake_case wire contracts (A2A agent cards, Qdrant
+  // payloads, health/NATS facts). Local identifiers stay camelCase.
+  {
+    files: ['src/pmoves/**/*.ts'],
+    rules: {
+      camelcase: ['error', {properties: 'never'}],
+      // `express.Router()` is a factory, not a constructor.
+      'new-cap': ['error', {capIsNewExceptions: ['Router']}],
+    },
+  },
   // Web UI (browser environment) — allow browser globals and React naming conventions
   {
     files: ['src/webui/**/*.ts', 'src/webui/**/*.tsx'],
