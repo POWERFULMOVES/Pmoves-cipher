@@ -22,7 +22,7 @@ import {AiSdkContentGenerator} from '../generators/ai-sdk-content-generator.js'
  * - `max_output_tokens` is not supported (must be omitted)
  * - `id` fields on input items are rejected
  */
-/* eslint-disable n/no-unsupported-features/node-builtins */
+ 
 export function createChatGptOAuthFetch(): typeof globalThis.fetch {
   return async (input, init) => {
     if (init?.method === 'POST' && init.body) {
@@ -72,7 +72,7 @@ export function createChatGptOAuthFetch(): typeof globalThis.fetch {
     return globalThis.fetch(input, init)
   }
 }
-/* eslint-enable n/no-unsupported-features/node-builtins */
+ 
 
 export const openaiProvider: ProviderModule = {
   apiKeyUrl: 'https://platform.openai.com/api-keys',

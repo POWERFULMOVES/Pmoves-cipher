@@ -1,45 +1,47 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, no-return-assign, no-promise-executor-return, prefer-destructuring, unicorn/no-useless-undefined */
+/* eslint-disable @typescript-eslint/no-explicit-any, unicorn/no-useless-undefined */
+import type {AddressInfo} from 'node:net'
+
 import {expect} from 'chai'
 import express from 'express'
 import http from 'node:http'
-import type {AddressInfo} from 'node:net'
 
 import type {MemoryManager} from '../../../src/agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from '../../../src/pmoves/nats-emitter.js'
+
 import {createMemoryRoutes} from '../../../src/pmoves/memory-routes.js'
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
 function makeMockNats(): PmovesNatsEmitter {
   return {
-    emitStored: () => {},
-    emitSearched: () => {},
-    emitReasoningStored: () => {},
+    emitReasoningStored() {},
+    emitSearched() {},
+    emitStored() {},
   } as unknown as PmovesNatsEmitter
 }
 
 function makeMockMemoryManager(): MemoryManager {
   const memories: any[] = []
   return {
-    create: async (args: any) => {
-      const m = {id: `test-${Date.now()}`, content: args.content, tags: args.tags ?? [], metadata: args.metadata ?? {}}
+    async create(args: any) {
+      const m = {content: args.content, id: `test-${Date.now()}`, metadata: args.metadata ?? {}, tags: args.tags ?? []}
       memories.push(m)
       return m
     },
-    get: async (id: string) => {
+    async delete(id: string) {
+      const idx = memories.findIndex((x) => x.id === id)
+      if (idx === -1) throw new Error(`Memory ${id} not found`)
+      memories.splice(idx, 1)
+    },
+    async get(id: string) {
       const m = memories.find((x) => x.id === id)
       if (!m) throw new Error(`Memory ${id} not found`)
       return m
     },
-    list: async (opts?: any) => {
+    async list(opts?: any) {
       let result = [...memories]
       if (opts?.limit) result = result.slice(0, opts.limit)
       return result
-    },
-    delete: async (id: string) => {
-      const idx = memories.findIndex((x) => x.id === id)
-      if (idx === -1) throw new Error(`Memory ${id} not found`)
-      memories.splice(idx, 1)
     },
   } as unknown as MemoryManager
 }
@@ -52,7 +54,7 @@ function simulatedAuthMiddleware(agentId: string | undefined, scopes: string[] =
   }
 }
 
-async function startTestApp(authAgentId: string | undefined): Promise<{server: http.Server; baseUrl: string}> {
+async function startTestApp(authAgentId: string | undefined): Promise<{baseUrl: string; server: http.Server;}> {
   const app = express()
   app.use(express.json())
   app.use(simulatedAuthMiddleware(authAgentId, ['memory:read', 'memory:write']))
@@ -61,22 +63,22 @@ async function startTestApp(authAgentId: string | undefined): Promise<{server: h
   return new Promise((resolve) => {
     const server = app.listen(0, () => {
       const {port} = server.address() as AddressInfo
-      resolve({server, baseUrl: `http://localhost:${port}`})
+      resolve({baseUrl: `http://localhost:${port}`, server})
     })
   })
 }
 
-function httpRequest(baseUrl: string, method: string, path: string, body?: any): Promise<{status: number; body: any}> {
+function httpRequest(baseUrl: string, method: string, path: string, body?: any): Promise<{body: any; status: number;}> {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : undefined
     const req = http.request(`${baseUrl}${path}`, {
-      method,
       headers: {'Content-Type': 'application/json', ...(data ? {'Content-Length': data.length} : {})},
+      method,
     }, (res) => {
       let buf = ''
       res.on('data', (c) => { buf += c })
       res.on('end', () => {
-        try { resolve({status: res.statusCode ?? 0, body: JSON.parse(buf)}) } catch { resolve({status: res.statusCode ?? 0, body: buf}) }
+        try { resolve({body: JSON.parse(buf), status: res.statusCode ?? 0}) } catch { resolve({body: buf, status: res.statusCode ?? 0}) }
       })
     })
     req.on('error', reject)
@@ -90,9 +92,9 @@ function httpRequest(baseUrl: string, method: string, path: string, body?: any):
 describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
   describe('POST /api/memory — token enforcement', () => {
     it('rejects store when args.agentId does not match token agentId (403)', async () => {
-      const {server, baseUrl} = await startTestApp('crush-spark')
+      const {baseUrl, server} = await startTestApp('crush-spark')
       try {
-        const r = await httpRequest(baseUrl, 'POST', '/api/memory', {content: 'sneaky', agentId: 'claude-4090'})
+        const r = await httpRequest(baseUrl, 'POST', '/api/memory', {agentId: 'claude-4090', content: 'sneaky'})
         expect(r.status).to.equal(403)
         expect(r.body.error).to.include('Forbidden')
       } finally {
@@ -101,9 +103,9 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
     })
 
     it('allows store when args.agentId matches token agentId', async () => {
-      const {server, baseUrl} = await startTestApp('crush-spark')
+      const {baseUrl, server} = await startTestApp('crush-spark')
       try {
-        const r = await httpRequest(baseUrl, 'POST', '/api/memory', {content: 'legit', agentId: 'crush-spark'})
+        const r = await httpRequest(baseUrl, 'POST', '/api/memory', {agentId: 'crush-spark', content: 'legit'})
         expect(r.status).to.equal(201)
       } finally {
         await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
@@ -111,7 +113,7 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
     })
 
     it('rejects store without agentId when token is present (400)', async () => {
-      const {server, baseUrl} = await startTestApp('crush-spark')
+      const {baseUrl, server} = await startTestApp('crush-spark')
       try {
         const r = await httpRequest(baseUrl, 'POST', '/api/memory', {content: 'no agent'})
         expect(r.status).to.equal(400)
@@ -121,9 +123,9 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
     })
 
     it('advisory mode (no token) allows self-declared agentId', async () => {
-      const {server, baseUrl} = await startTestApp(undefined)
+      const {baseUrl, server} = await startTestApp(undefined)
       try {
-        const r = await httpRequest(baseUrl, 'POST', '/api/memory', {content: 'advisory', agentId: 'kimi-spark'})
+        const r = await httpRequest(baseUrl, 'POST', '/api/memory', {agentId: 'kimi-spark', content: 'advisory'})
         expect(r.status).to.equal(201)
       } finally {
         await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
@@ -133,7 +135,7 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
 
   describe('GET /api/memory/search — token enforcement', () => {
     it('rejects wildcard agentId=* in token enforcement mode', async () => {
-      const {server, baseUrl} = await startTestApp('crush-spark')
+      const {baseUrl, server} = await startTestApp('crush-spark')
       try {
         const r = await httpRequest(baseUrl, 'GET', '/api/memory/search?q=test&agentId=*')
         expect(r.status).to.equal(403)
@@ -144,7 +146,7 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
     })
 
     it('rejects search when args.agentId mismatches token', async () => {
-      const {server, baseUrl} = await startTestApp('crush-spark')
+      const {baseUrl, server} = await startTestApp('crush-spark')
       try {
         const r = await httpRequest(baseUrl, 'GET', '/api/memory/search?q=test&agentId=claude-4090')
         expect(r.status).to.equal(403)
@@ -154,7 +156,7 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
     })
 
     it('advisory mode allows wildcard cross-agent search', async () => {
-      const {server, baseUrl} = await startTestApp(undefined)
+      const {baseUrl, server} = await startTestApp(undefined)
       try {
         const r = await httpRequest(baseUrl, 'GET', '/api/memory/search?q=test&agentId=*')
         expect(r.status).to.equal(200)

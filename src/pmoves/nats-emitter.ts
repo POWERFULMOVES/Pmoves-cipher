@@ -4,17 +4,18 @@ const SUBJECT_REASONING = 'cipher.reasoning.stored.v1'
 const SUBJECT_ANNOUNCE = 'services.announce.v1'
 
 export interface PmovesNatsEmitter {
-  emitStored(memoryId: string, category: string, tags: string[]): void
-  emitSearched(query: string, resultCount: number, category?: string): void
-  emitReasoningStored(reasoningId: string, question: string): void
   announce(slug: string, url: string, port: number): void
   close(): Promise<void>
+  emitReasoningStored(reasoningId: string, question: string): void
+  emitSearched(query: string, resultCount: number, category?: string): void
+  emitStored(memoryId: string, category: string, tags: string[]): void
 }
 
 export async function createNatsEmitter(url: string): Promise<PmovesNatsEmitter> {
   if (!url) {
     return createNoOpEmitter()
   }
+
   try {
     const natsModule = await import('nats')
 
@@ -45,29 +46,30 @@ export async function createNatsEmitter(url: string): Promise<PmovesNatsEmitter>
         process.stderr.write(`pmoves-nats: publish failed on ${subject}: ${error}\n`)
       }
     }
+
     return {
-      emitStored: (memoryId, category, tags) => publish(SUBJECT_STORED, {memory_id: memoryId, category, tags}),
-      emitSearched: (query, resultCount, category) => publish(SUBJECT_SEARCHED, {query, result_count: resultCount, category}),
-      emitReasoningStored: (reasoningId, question) => publish(SUBJECT_REASONING, {reasoning_id: reasoningId, question}),
-      announce: (slug, url, port) => {
+      announce(slug, url, port) {
         publish(SUBJECT_ANNOUNCE, {
-          slug,
-          name: 'Cipher Memory (PMOVES Shim)',
-          url,
           health_check: `${url}/health`,
-          tier: 'data',
-          port,
-          timestamp: new Date().toISOString(),
           metadata: {bridge_for: 'cipher-memory', protocol: 'rest+mcp', transport: 'sse'},
+          name: 'Cipher Memory (PMOVES Shim)',
+          port,
+          slug,
+          tier: 'data',
+          timestamp: new Date().toISOString(),
+          url,
         })
       },
-      close: async () => {
+      async close() {
         try {
           await nc.drain()
         } catch {
           // ignore
         }
       },
+      emitReasoningStored: (reasoningId, question) => publish(SUBJECT_REASONING, {question, reasoning_id: reasoningId}),
+      emitSearched: (query, resultCount, category) => publish(SUBJECT_SEARCHED, {category, query, result_count: resultCount}),
+      emitStored: (memoryId, category, tags) => publish(SUBJECT_STORED, {category, memory_id: memoryId, tags}),
     }
   } catch (error) {
     process.stderr.write(`pmoves-nats: connect failed — emitting no-op (${error})\n`)
@@ -77,10 +79,10 @@ export async function createNatsEmitter(url: string): Promise<PmovesNatsEmitter>
 
 function createNoOpEmitter(): PmovesNatsEmitter {
   return {
-    emitStored() {},
-    emitSearched() {},
-    emitReasoningStored() {},
     announce() {},
     async close() {},
+    emitReasoningStored() {},
+    emitSearched() {},
+    emitStored() {},
   }
 }

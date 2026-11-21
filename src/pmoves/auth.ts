@@ -52,14 +52,7 @@ let devModeAnnounced = false
 // TTL: 60s — short enough to pick up revocations quickly, long enough to
 // avoid a PostgREST round-trip on every request.
 const TOKEN_CACHE_TTL_MS = 60_000
-const tokenCache = new Map<string, {agentId: string; scopes: string[]; expires: number}>()
-
-interface TokenRecord {
-  token_uuid: string
-  agent_id: string
-  scopes: string[]
-  revoked_at: string | null
-}
+const tokenCache = new Map<string, {agentId: string; expires: number; scopes: string[];}>()
 
 // Three outcomes, not two. `rejected` means the lookup SUCCEEDED and found no
 // active row: the token is unknown or revoked, and 401 is the truth.
@@ -145,7 +138,7 @@ export async function resolveToken(token: string): Promise<TokenResolution> {
         // cipher_agent_tokens lives in pmoves_core, not the default public
         // profile — without this header PostgREST 404s the lookup and every
         // per-agent token fails as "invalid".
-        headers: {apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, 'Accept-Profile': 'pmoves_core'},
+        headers: {'Accept-Profile': 'pmoves_core', apikey: serviceKey, Authorization: `Bearer ${serviceKey}`},
         signal: AbortSignal.timeout(3000),
       },
     )
@@ -198,7 +191,7 @@ export async function resolveToken(token: string): Promise<TokenResolution> {
 export function createPmovesAuthMiddleware(options: PmovesAuthOptions = {}) {
   const {required, skipIfUnset = true} = options
 
-  return async function pmovesAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  return async function (req: Request, res: Response, next: NextFunction): Promise<void> {
     const header = req.headers.authorization ?? ''
     const match = /^Bearer\s+(.+)$/.exec(header)
     const token = match?.[1] ?? ''
@@ -222,10 +215,12 @@ export function createPmovesAuthMiddleware(options: PmovesAuthOptions = {}) {
         req.agentId = undefined
         return next()
       }
+
       if (!legacyToken) {
         res.status(500).json({error: 'CIPHER_API_TOKEN not set and no Bearer token provided'})
         return
       }
+
       res.status(401).json({error: 'Unauthorized — Bearer token required'})
       return
     }
@@ -251,4 +246,4 @@ export function createPmovesAuthMiddleware(options: PmovesAuthOptions = {}) {
   }
 }
 
-export const PUBLIC_PATHS = new Set(['/health', '/healthz', '/.well-known/'])
+export const PUBLIC_PATHS = new Set(['/.well-known/', '/health', '/healthz'])

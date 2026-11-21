@@ -484,7 +484,7 @@ const CATEGORIES = [
  * construction.
  */
 export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNatsEmitter): Router {
-  // eslint-disable-next-line new-cap -- express Router() is designed to be called without new
+   
   const router = Router()
   // Each legacy-SSE session remembers the identity that opened it, so the
   // POST /mcp/messages calls for that session run as the same agent.
@@ -548,8 +548,8 @@ export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNat
       sessionIdGenerator: undefined,
     })
     res.on('close', () => {
-      void transport.close()
-      void server.close()
+      transport.close().catch(() => {})
+      server.close().catch(() => {})
     })
     await server.connect(transport)
     await transport.handleRequest(req, res, req.body)

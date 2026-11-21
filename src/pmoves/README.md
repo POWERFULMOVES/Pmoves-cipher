@@ -44,7 +44,7 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache)
 | 4 | `GET /api/memory/:id` | bridge (disabled) | `memory-routes.ts` |
 | 5 | `DELETE /api/memory/:id` | bridge (disabled) | `memory-routes.ts` |
 | 6 | `GET /mcp/sse` (MCP-over-SSE, **legacy**) | legacy SSE clients | `mcp-sse.ts` |
-| 7 | Bearer auth via `CIPHER_API_TOKEN` | all callers | `auth.ts` |
+| 7 | Bearer auth — **per-agent tokens** (PostgREST lookup; `CIPHER_API_TOKEN` = legacy bootstrap; `CIPHER_AUTH_REQUIRED` closes dev mode) | all callers | `auth.ts` |
 | 8 | `POST /mcp` (MCP-over-HTTP, **stateless streamable-http — preferred**) | Agent Zero, deepseek-harness, Claude Code | `mcp-sse.ts` |
 
 > **Transport (updated 2026-09-04):** prefer the **streamable-http `POST /mcp`** endpoint.
@@ -52,7 +52,8 @@ PMOVES agents (Claude Code, Crush, Hermes, Agent Zero, semantic-cache)
 > cannot emit the "Unknown session" HTTP 400 the legacy SSE flow returns when a client's
 > stream and its message POST don't share one in-process transport (the failure Agent Zero
 > hit; it was moved onto `/mcp` in PMOVES.AI #2923). `GET /mcp/sse` + `POST /mcp/messages`
-> remain for back-compat. Both require `Authorization: Bearer ${CIPHER_API_TOKEN}`.
+> remain for back-compat. Both require `Authorization: Bearer <token>` — a
+> per-agent token (resolved via PostgREST) or the legacy `CIPHER_API_TOKEN`.
 
 > **MCP identity (updated 2026-09-23):** both MCP transports read the caller's identity
 > **per request** from the auth middleware (`req.agentId` / `req.scopes`) and the legacy SSE
