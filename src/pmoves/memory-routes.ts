@@ -4,26 +4,36 @@ import express, {Router} from 'express'
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
 import type {PmovesNatsEmitter} from './nats-emitter.js'
 
+import {isBoundAgent} from './auth.js'
 import {getEmbeddingSidecar} from './embedding.js'
-import './auth.js'
 
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 100
 
-function assertAgentId(req: express.Request, argsAgentId?: string, allowWildcard = false): void {
+/**
+ * A per-agent token IS the identity. With one, an omitted agentId resolves to
+ * the token's agent (scoped, never unscoped); a supplied one must equal it, and
+ * "*" is refused. The shared bootstrap token still has to declare an agentId. Without a token (dev-skip / advisory) the caller's value is
+ * returned as-is and the route's own "agentId is required" check applies.
+ */
+function resolveAgentId(req: express.Request, argsAgentId?: string, allowWildcard = false): string | undefined {
   const authAgentId = req.agentId
-  if (!authAgentId) return // dev-skip / advisory mode
-  if (!argsAgentId) {
-    throw new Error('agentId is required when a token is present')
-  }
+  if (!authAgentId) return argsAgentId // dev-skip / advisory mode
 
   if (allowWildcard && argsAgentId === '*') {
     throw new Error('Forbidden: cross-agent wildcard search is not allowed in token enforcement mode')
   }
 
-  if (argsAgentId !== authAgentId) {
+  if (!argsAgentId && !isBoundAgent(authAgentId)) {
+    // The shared bootstrap token names no one: there is nothing to default to.
+    throw new Error('agentId is required when a token is present')
+  }
+
+  if (argsAgentId && argsAgentId !== authAgentId) {
     throw new Error(`Forbidden: token belongs to agent '${authAgentId}', but request specified '${argsAgentId}'`)
   }
+
+  return authAgentId
 }
 
 export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNatsEmitter): Router {
@@ -33,18 +43,18 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
 
   router.post('/memory', async (req, res) => {
     try {
-      const {agentId, category = 'context', content, metadata = {}, tags = []} = req.body ?? {}
+      const {agentId: bodyAgentId, category = 'context', content, metadata = {}, tags = []} = req.body ?? {}
       if (!content || typeof content !== 'string') {
         res.status(400).json({error: 'content is required and must be a string'})
         return
       }
 
+      const agentId = resolveAgentId(req, bodyAgentId)
       if (!agentId || typeof agentId !== 'string') {
         res.status(400).json({error: 'agentId is required for per-agent scope'})
         return
       }
 
-      assertAgentId(req, agentId)
       const allTags = [category, ...tags].filter(Boolean)
       // Spread custom metadata FIRST, then set category + agentId — prevents
       // caller-supplied metadata.agentId from overriding the validated top-level agentId.
@@ -91,9 +101,8 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
       const limit = Math.min(Math.max(Number(req.query.limit ?? DEFAULT_LIMIT) || DEFAULT_LIMIT, 1), MAX_LIMIT)
       const category = req.query.category ? String(req.query.category) : undefined
       // agentId query param scopes search. Use "*" for cross-agent (advisory).
-      const agentIdRaw = req.query.agentId ? String(req.query.agentId) : undefined
+      const agentIdRaw = resolveAgentId(req, req.query.agentId ? String(req.query.agentId) : undefined, true)
       const scopedAgentId = agentIdRaw && agentIdRaw !== '*' ? agentIdRaw : undefined
-      assertAgentId(req, agentIdRaw, true)
 
       const queryEmbedding = await sidecar.embed(q)
       let results: Array<{agentId?: string; category: string; content: string; created_at: string; id: string; score?: number; tags: string[];}>
@@ -169,8 +178,7 @@ export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNat
 
   router.delete('/memory/:id', async (req, res) => {
     try {
-      const agentId = req.query.agentId ? String(req.query.agentId) : undefined
-      assertAgentId(req, agentId)
+      const agentId = resolveAgentId(req, req.query.agentId ? String(req.query.agentId) : undefined)
       // Ownership check: fetch the memory first and verify it belongs to the
       // requesting agent BEFORE deleting anything. Prevents an agent from
       // deleting another agent's memory by guessing the id.

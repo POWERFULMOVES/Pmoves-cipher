@@ -110,10 +110,21 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
       }
     })
 
-    it('rejects store without agentId when token is present (400)', async () => {
+    it('store without agentId files under the token agent (201)', async () => {
       const {server, baseUrl} = await startTestApp('crush-spark')
       try {
-        const r = await httpRequest(baseUrl, 'POST', '/api/memory', {content: 'no agent'})
+        const r = await httpRequest(baseUrl, 'POST', '/api/memory', {content: 'bound by token'})
+        expect(r.status).to.equal(201)
+        expect(r.body.agentId).to.equal('crush-spark')
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('without a token, a store still must declare agentId (400)', async () => {
+      const {server, baseUrl} = await startTestApp(undefined)
+      try {
+        const r = await httpRequest(baseUrl, 'POST', '/api/memory', {content: 'no agent, no token'})
         expect(r.status).to.equal(400)
       } finally {
         await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
@@ -148,6 +159,26 @@ describe('pmoves per-agent token enforcement (Phase B PR 2)', () => {
       try {
         const r = await httpRequest(baseUrl, 'GET', '/api/memory/search?q=test&agentId=claude-4090')
         expect(r.status).to.equal(403)
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('search without agentId on a per-agent token is accepted (scoped to the token agent)', async () => {
+      const {server, baseUrl} = await startTestApp('crush-spark')
+      try {
+        const r = await httpRequest(baseUrl, 'GET', '/api/memory/search?q=test')
+        expect(r.status, JSON.stringify(r.body)).to.equal(200)
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      }
+    })
+
+    it('search without agentId on the shared bootstrap token is refused (400)', async () => {
+      const {server, baseUrl} = await startTestApp('bootstrap')
+      try {
+        const r = await httpRequest(baseUrl, 'GET', '/api/memory/search?q=test')
+        expect(r.status).to.equal(400)
       } finally {
         await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
       }
