@@ -38,7 +38,6 @@ describe('CallbackServer', () => {
       const callbackPromise = server.waitForCallback(internalState, 5000)
 
       // Simulate OAuth callback
-       
       await fetch(`http://localhost:${port}/callback?code=${internalCode}&state=${internalState}`)
 
       const result = await callbackPromise
@@ -66,7 +65,6 @@ describe('CallbackServer', () => {
       const receivedState = 'wrong-state'
 
       const callbackPromise = server.waitForCallback(internalState, 5000).catch((error: Error) => error)
-       
       await fetch(`http://localhost:${port}/callback?code=auth-code&state=${receivedState}`)
 
       const error = await callbackPromise
@@ -83,7 +81,6 @@ describe('CallbackServer', () => {
       const expectedState = 'state-success'
       const callbackPromise = server.waitForCallback(expectedState, 5000)
 
-       
       const res = await fetch(`http://localhost:${port}/callback?code=abc&state=${expectedState}`)
       const body = await res.text()
       await callbackPromise
@@ -102,7 +99,6 @@ describe('CallbackServer', () => {
         .waitForCallback('any-state', 5000)
         .catch((error: Error) => error)
 
-       
       const res = await fetch(
         `http://localhost:${port}/callback?error=access_denied&error_description=user%20denied%20access`,
       )
@@ -123,7 +119,6 @@ describe('CallbackServer', () => {
         .waitForCallback('any-state', 5000)
         .catch((error: Error) => error)
 
-       
       const res = await fetch(
         `http://localhost:${port}/callback?error=oops&error_description=` +
           encodeURIComponent('<script>alert("x")</script>'),
@@ -144,7 +139,6 @@ describe('CallbackServer', () => {
         .waitForCallback('any-state', 5000)
         .catch((error: Error) => error)
 
-       
       const res = await fetch(`http://localhost:${port}/callback?code=abc`) // no state
       const body = await res.text()
       const captured = await errorPromise
@@ -167,7 +161,6 @@ describe('CallbackServer', () => {
         .catch((error: Error) => error)
 
       // ?error=foo&error_description= — empty description must NOT render an empty red box.
-       
       const res = await fetch(`http://localhost:${port}/callback?error=server_error&error_description=`)
       const body = await res.text()
       await errorPromise
@@ -247,7 +240,6 @@ describe('CallbackServer', () => {
       const port = await server.start()
 
       // Create an active HTTP connection that keeps alive
-       
       const fetchPromise = fetch(`http://localhost:${port}/callback?code=test-code&state=test-state`)
 
       // Wait a bit to ensure connection is established
@@ -274,9 +266,7 @@ describe('CallbackServer', () => {
       const port1 = await server.start()
 
       // Create active connections
-       
       const fetch1 = fetch(`http://localhost:${port1}/callback?code=code1&state=state1`)
-       
       const fetch2 = fetch(`http://localhost:${port1}/callback?code=code2&state=state2`)
 
       // Wait for connections to establish

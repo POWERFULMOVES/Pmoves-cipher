@@ -25,10 +25,12 @@ export default [
   },
   // Node built-ins availability is governed by the shipped Docker image, not
   // the oclif engines range; the runtime (Node 20+) provides global fetch.
+  // Keep the rule on and exempt only the fetch/Response globals so any other
+  // too-new built-in is still caught.
   {
     files: ['src/**/*.ts', 'test/**/*.ts'],
     rules: {
-      'n/no-unsupported-features/node-builtins': 'off',
+      'n/no-unsupported-features/node-builtins': ['error', {ignores: ['fetch', 'Response']}],
     },
   },
   // The PMOVES shim speaks snake_case wire contracts (A2A agent cards, Qdrant

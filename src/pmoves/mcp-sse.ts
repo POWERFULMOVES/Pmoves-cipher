@@ -484,7 +484,6 @@ const CATEGORIES = [
  * construction.
  */
 export function createMcpSseRouter(memoryManager: MemoryManager, nats: PmovesNatsEmitter): Router {
-   
   const router = Router()
   // Each legacy-SSE session remembers the identity that opened it, so the
   // POST /mcp/messages calls for that session run as the same agent.

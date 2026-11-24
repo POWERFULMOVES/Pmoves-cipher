@@ -151,7 +151,6 @@ async function translateUploadPackV2ToV1(
   // body in an ESM context (it lazily loads node:stream via require()).
   let lsBody: Buffer
   try {
-     
     const fetchResponse = await fetch(`${baseUrl}/git-upload-pack`, {
       body: LS_REFS_REQUEST,
       headers: {
@@ -244,7 +243,6 @@ async function interceptUploadPackPost(params: Parameters<typeof httpRequest>[0]
   let statusCode: number
   let statusMessage: string
   try {
-     
     const fetchResponse = await fetch(url, {
       body: Buffer.from(v2),
       headers: {

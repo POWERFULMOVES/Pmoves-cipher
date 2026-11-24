@@ -9,7 +9,6 @@ describe('createChatGptOAuthFetch', () => {
   let customFetch: typeof globalThis.fetch
 
   beforeEach(() => {
-     
     fetchStub = stub(globalThis, 'fetch').resolves(new Response('ok'))
     customFetch = createChatGptOAuthFetch()
   })
@@ -178,7 +177,6 @@ describe('createChatGptOAuthFetch', () => {
         }
 
         // Return a minimal valid OpenAI Responses API response
-         
         return new Response(JSON.stringify({
           id: 'resp-test',
           model: 'gpt-4.1',

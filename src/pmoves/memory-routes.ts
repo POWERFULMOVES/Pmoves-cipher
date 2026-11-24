@@ -1,4 +1,3 @@
- 
 import express, {Router} from 'express'
 
 import type {MemoryManager} from '../agent/infra/memory/memory-manager.js'
@@ -27,7 +26,6 @@ function assertAgentId(req: express.Request, argsAgentId?: string, allowWildcard
 }
 
 export function createMemoryRoutes(memoryManager: MemoryManager, nats: PmovesNatsEmitter): Router {
-   
   const router = Router()
   const sidecar = getEmbeddingSidecar()
 
