@@ -30,7 +30,6 @@ function makeMockAnthropicFetch(): {capturedRequests: CapturedRequest[]; fetch: 
       usage: {input_tokens: 1, output_tokens: 1},
     }
 
-    // eslint-disable-next-line n/no-unsupported-features/node-builtins
     return new Response(JSON.stringify(response), {
       headers: {'content-type': 'application/json'},
       status: 200,

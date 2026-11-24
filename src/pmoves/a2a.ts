@@ -1,4 +1,5 @@
 import {Router} from 'express'
+
 import {createPmovesAuthMiddleware} from './auth.js'
 
 export function createA2ARouter(): Router {
@@ -9,18 +10,18 @@ export function createA2ARouter(): Router {
     auth(req, res, () => {
       const base = `${req.protocol}://${req.get('host')}`
       res.json({
-        name: 'Cipher Memory (PMOVES Shim)',
-        description: 'Agent memory service — REST + MCP-over-SSE on ByteRover v3.16.1',
-        version: '0.1.0',
         capabilities: ['memory', 'mcp', 'streaming', 'reasoning'],
+        description: 'Agent memory service — REST + MCP-over-SSE on ByteRover v3.16.1',
         endpoints: {
-          base,
           api: `${base}/api/memory`,
-          mcp_sse: `${base}/mcp/sse`,
+          base,
           health: `${base}/health`,
+          mcp_sse: `${base}/mcp/sse`,
         },
+        name: 'Cipher Memory (PMOVES Shim)',
         protocols: ['http', 'mcp-sse'],
         timestamp: new Date().toISOString(),
+        version: '0.1.0',
       })
     })
   })

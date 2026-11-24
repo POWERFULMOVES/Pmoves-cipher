@@ -1014,8 +1014,16 @@ describe('FileTaskHistoryStore', () => {
 
         await store.flushPendingOperations()
 
+        // The threshold is strict (`>` 2.0), so a mid-save compaction may
+        // legally converge to 2 lines / 1 live (ratio exactly 2.0 — no further
+        // pass). Same convergence boundary the ratio=1 test below documents.
+        // Anything above 2 means compaction never ran — that is the failure
+        // this test exists to catch. Zero lines would mean compaction dropped
+        // the live entry, so bound it below too and prove 'spam' survives.
         const lineCount = await countIndexLines()
-        expect(lineCount).to.equal(1)
+        expect(lineCount).to.be.within(1, 2)
+        const live = await store.getById('spam')
+        expect(live?.taskId).to.equal('spam')
       })
 
       it('rewrites _index.jsonl with one line per live entry', async () => {

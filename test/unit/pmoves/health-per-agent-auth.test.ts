@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, n/no-unsupported-features/node-builtins */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type {AddressInfo} from 'node:net'
 
 import {expect} from 'chai'

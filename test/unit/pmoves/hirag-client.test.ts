@@ -1,5 +1,4 @@
-/* eslint-disable perfectionist/sort-objects, perfectionist/sort-object-types,
-   n/no-unsupported-features/node-builtins, unicorn/prefer-global-this,
+/* eslint-disable perfectionist/sort-objects, perfectionist/sort-object-types, unicorn/prefer-global-this,
    @stylistic/padding-line-between-statements, no-undef, camelcase */
 // `fetch`/`Response`/`RequestInit` are this harness's own stubs, and the
 // camelcase exemption covers the live Hi-RAG v2 wire keys `used_rerank` /

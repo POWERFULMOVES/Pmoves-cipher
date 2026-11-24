@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, camelcase, n/no-unsupported-features/node-builtins */
+/* eslint-disable @typescript-eslint/no-explicit-any, camelcase */
 import {expect} from 'chai'
 import {randomUUID} from 'node:crypto'
 

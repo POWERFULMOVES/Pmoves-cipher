@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, no-return-assign,
-   perfectionist/sort-objects, perfectionist/sort-object-types, perfectionist/sort-imports,
-   n/no-unsupported-features/node-builtins, unicorn/prefer-global-this, unicorn/no-new-array,
+   perfectionist/sort-objects, perfectionist/sort-object-types, perfectionist/sort-imports, unicorn/prefer-global-this, unicorn/no-new-array,
    object-shorthand, @stylistic/padding-line-between-statements, no-undef, camelcase */
 // Test-file rule relaxations. `fetch`/`Response`/`RequestInit` are the
 // harness's own stubs (the node-builtins rule targets a >=20 engines range,

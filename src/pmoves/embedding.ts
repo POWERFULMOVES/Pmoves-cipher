@@ -31,15 +31,15 @@ const DEFAULT_EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM ?? 2560)
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY ?? ''
 const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://pmoves-ollama:11434'
 const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? 'qwen3-embedding:4b'
-const EMBED_TIMEOUT_MS = Number(process.env.PMOVES_EMBED_TIMEOUT_MS ?? 30000)
+const EMBED_TIMEOUT_MS = Number(process.env.PMOVES_EMBED_TIMEOUT_MS ?? 30_000)
 
 // Named vector fields in the Qdrant collection.
 const DENSE_FIELD = 'dense'
 const BM25_FIELD = 'bm25'
 
 export interface EmbeddingResult {
-  vector: number[]
   dim: number
+  vector: number[]
 }
 
 export interface SearchResult {
@@ -48,12 +48,12 @@ export interface SearchResult {
 }
 
 class EmbeddingSidecar {
-  private readonly tensorzeroUrl: string
-  private readonly qdrantUrl: string
-  private readonly qdrantCollection: string
-  private readonly embeddingModel: string
-  private readonly embeddingDim: number
   private collectionReady = false
+  private readonly embeddingDim: number
+  private readonly embeddingModel: string
+  private readonly qdrantCollection: string
+  private readonly qdrantUrl: string
+  private readonly tensorzeroUrl: string
 
   constructor() {
     this.tensorzeroUrl = DEFAULT_TENSORZERO_URL
@@ -63,56 +63,34 @@ class EmbeddingSidecar {
     this.embeddingDim = DEFAULT_EMBEDDING_DIM
   }
 
+  async deleteVector(memoryId: string, agentId?: string): Promise<void> {
+    if (!(await this.ensureCollection())) return
+    try {
+      const headers: Record<string, string> = {'Content-Type': 'application/json'}
+      if (QDRANT_API_KEY) headers.Authorization = `Bearer ${QDRANT_API_KEY}`
+
+      // Delete by payload filter (memoryId is stored in payload, not as point id).
+      // If agentId is provided, scope the delete to that agent (defensive - prevents
+      // a compromised agent from deleting another agent's memories by guessing ids).
+      const must: Array<{key: string, match: {value: string}}> = [{key: 'memoryId', match: {value: memoryId}}]
+      if (agentId) must.push({key: 'agentId', match: {value: agentId}})
+      await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points/delete`, {
+        body: JSON.stringify({
+          filter: {must},
+        }),
+        headers,
+        method: 'POST',
+        signal: AbortSignal.timeout(5000),
+      })
+    } catch (error) {
+      process.stderr.write(`pmoves-embed: Qdrant delete failed - ${error}\n`)
+    }
+  }
+
   async embed(text: string): Promise<EmbeddingResult | null> {
     const tzResult = await this.embedTensorZero(text)
     if (tzResult) return tzResult
     return this.embedOllama(text)
-  }
-
-  private async embedTensorZero(text: string): Promise<EmbeddingResult | null> {
-    try {
-      const resp = await fetch(`${this.tensorzeroUrl}/openai/v1/embeddings`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({model: this.embeddingModel, input: text}),
-        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
-      })
-      if (!resp.ok) {
-        process.stderr.write(`pmoves-embed: TensorZero returned ${resp.status}\n`)
-        return null
-      }
-      const data = await resp.json() as {data: Array<{embedding: number[]}>}
-      if (!data.data?.[0]?.embedding) {
-        return null
-      }
-      return {vector: data.data[0].embedding, dim: data.data[0].embedding.length}
-    } catch (error) {
-      process.stderr.write(`pmoves-embed: TensorZero unreachable - trying Ollama fallback\n`)
-      return null
-    }
-  }
-
-  private async embedOllama(text: string): Promise<EmbeddingResult | null> {
-    try {
-      const resp = await fetch(`${OLLAMA_URL}/api/embed`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({model: OLLAMA_EMBED_MODEL, input: text}),
-        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
-      })
-      if (!resp.ok) {
-        process.stderr.write(`pmoves-embed: Ollama returned ${resp.status}\n`)
-        return null
-      }
-      const data = await resp.json() as {embeddings: number[][]}
-      if (!data.embeddings?.[0]) {
-        return null
-      }
-      return {vector: data.embeddings[0], dim: data.embeddings[0].length}
-    } catch (error) {
-      process.stderr.write(`pmoves-embed: Ollama unreachable - ${error}\n`)
-      return null
-    }
   }
 
   async ensureCollection(): Promise<boolean> {
@@ -129,20 +107,21 @@ class EmbeddingSidecar {
         this.collectionReady = true
         return true
       }
+
       if (checkResp.status !== 404) {
         process.stderr.write(`pmoves-embed: Qdrant collection check returned ${checkResp.status}\n`)
         return false
       }
 
       const createResp = await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}`, {
-        method: 'PUT',
-        headers,
         body: JSON.stringify({
-          vectors: {[DENSE_FIELD]: {size: this.embeddingDim, distance: 'Cosine'}},
           sparse_vectors: {
             [BM25_FIELD]: {modifier: 'idf'},
           },
+          vectors: {[DENSE_FIELD]: {distance: 'Cosine', size: this.embeddingDim}},
         }),
+        headers,
+        method: 'PUT',
         signal: AbortSignal.timeout(5000),
       })
       if (createResp.ok) {
@@ -150,46 +129,12 @@ class EmbeddingSidecar {
         this.collectionReady = true
         return true
       }
+
       process.stderr.write(`pmoves-embed: Qdrant collection create failed ${createResp.status}\n`)
       return false
     } catch (error) {
       process.stderr.write(`pmoves-embed: Qdrant unreachable - ${error}\n`)
       return false
-    }
-  }
-
-  async storeVector(memoryId: string, embedding: EmbeddingResult, category: string, tags: string[], content: string, agentId: string): Promise<void> {
-    if (!(await this.ensureCollection())) return
-    try {
-      const headers: Record<string, string> = {'Content-Type': 'application/json'}
-      if (QDRANT_API_KEY) headers.Authorization = `Bearer ${QDRANT_API_KEY}`
-
-      // Qdrant point IDs must be unsigned integers or UUID strings.
-      // Cipher memory IDs are 12-char nanoids (not UUID-compatible), so we
-      // generate a UUID for the Qdrant point id and store the memoryId in payload.
-      const pointId = randomUUID()
-
-      const resp = await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points`, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify({
-          points: [{
-            id: pointId,
-            vector: {
-              [DENSE_FIELD]: embedding.vector,
-              [BM25_FIELD]: {text: content, model: 'qdrant/bm25'},
-            },
-            payload: {memoryId, category, tags, content, agentId},
-          }],
-        }),
-        signal: AbortSignal.timeout(10000),
-      })
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => '')
-        process.stderr.write(`pmoves-embed: Qdrant store returned ${resp.status} for memory ${memoryId}: ${body}\n`)
-      }
-    } catch (error) {
-      process.stderr.write(`pmoves-embed: Qdrant store failed - ${error}\n`)
     }
   }
 
@@ -211,34 +156,35 @@ class EmbeddingSidecar {
       // passes the raw query text and lets Qdrant tokenize it server-side.
       // Qdrant 1.16+: fusion goes in the top-level "query" field, not as a sibling.
       const resp = await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points/query`, {
-        method: 'POST',
-        headers,
         body: JSON.stringify({
+          limit,
           prefetch: [
             {
+              limit: limit * 3,
               query: queryEmbedding.vector,
               using: DENSE_FIELD,
-              limit: limit * 3,
               ...(filter && {filter}),
             },
             {
-              query: {text: queryText, model: 'qdrant/bm25'},
-              using: BM25_FIELD,
               limit: limit * 3,
+              query: {model: 'qdrant/bm25', text: queryText},
+              using: BM25_FIELD,
               ...(filter && {filter}),
             },
           ],
           query: {fusion: 'rrf'},
-          limit,
           with_payload: true,
         }),
-        signal: AbortSignal.timeout(10000),
+        headers,
+        method: 'POST',
+        signal: AbortSignal.timeout(10_000),
       })
       if (!resp.ok) {
         process.stderr.write(`pmoves-embed: Qdrant query returned ${resp.status}\n`)
         return []
       }
-      const data = await resp.json() as {result: {points: Array<{id: string | number, score: number, payload?: {memoryId?: string}}>}}
+
+      const data = await resp.json() as {result: {points: Array<{id: number | string, payload?: {memoryId?: string}; score: number,}>}}
       const points = data.result?.points ?? []
       // Surface payload.memoryId so memory-routes.ts can map hits back to
       // MemoryManager.get(). Legacy rows without payload.memoryId are dropped.
@@ -251,27 +197,88 @@ class EmbeddingSidecar {
     }
   }
 
-  async deleteVector(memoryId: string, agentId?: string): Promise<void> {
+  async storeVector(memoryId: string, embedding: EmbeddingResult, category: string, tags: string[], content: string, agentId: string): Promise<void> {
     if (!(await this.ensureCollection())) return
     try {
       const headers: Record<string, string> = {'Content-Type': 'application/json'}
       if (QDRANT_API_KEY) headers.Authorization = `Bearer ${QDRANT_API_KEY}`
 
-      // Delete by payload filter (memoryId is stored in payload, not as point id).
-      // If agentId is provided, scope the delete to that agent (defensive - prevents
-      // a compromised agent from deleting another agent's memories by guessing ids).
-      const must: Array<{key: string, match: {value: string}}> = [{key: 'memoryId', match: {value: memoryId}}]
-      if (agentId) must.push({key: 'agentId', match: {value: agentId}})
-      await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points/delete`, {
-        method: 'POST',
-        headers,
+      // Qdrant point IDs must be unsigned integers or UUID strings.
+      // Cipher memory IDs are 12-char nanoids (not UUID-compatible), so we
+      // generate a UUID for the Qdrant point id and store the memoryId in payload.
+      const pointId = randomUUID()
+
+      const resp = await fetch(`${this.qdrantUrl}/collections/${this.qdrantCollection}/points`, {
         body: JSON.stringify({
-          filter: {must},
+          points: [{
+            id: pointId,
+            payload: {agentId, category, content, memoryId, tags},
+            vector: {
+              [BM25_FIELD]: {model: 'qdrant/bm25', text: content},
+              [DENSE_FIELD]: embedding.vector,
+            },
+          }],
         }),
-        signal: AbortSignal.timeout(5000),
+        headers,
+        method: 'PUT',
+        signal: AbortSignal.timeout(10_000),
       })
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '')
+        process.stderr.write(`pmoves-embed: Qdrant store returned ${resp.status} for memory ${memoryId}: ${body}\n`)
+      }
     } catch (error) {
-      process.stderr.write(`pmoves-embed: Qdrant delete failed - ${error}\n`)
+      process.stderr.write(`pmoves-embed: Qdrant store failed - ${error}\n`)
+    }
+  }
+
+  private async embedOllama(text: string): Promise<EmbeddingResult | null> {
+    try {
+      const resp = await fetch(`${OLLAMA_URL}/api/embed`, {
+        body: JSON.stringify({input: text, model: OLLAMA_EMBED_MODEL}),
+        headers: {'Content-Type': 'application/json'},
+        method: 'POST',
+        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      })
+      if (!resp.ok) {
+        process.stderr.write(`pmoves-embed: Ollama returned ${resp.status}\n`)
+        return null
+      }
+
+      const data = await resp.json() as {embeddings: number[][]}
+      if (!data.embeddings?.[0]) {
+        return null
+      }
+
+      return {dim: data.embeddings[0].length, vector: data.embeddings[0]}
+    } catch (error) {
+      process.stderr.write(`pmoves-embed: Ollama unreachable - ${error}\n`)
+      return null
+    }
+  }
+
+  private async embedTensorZero(text: string): Promise<EmbeddingResult | null> {
+    try {
+      const resp = await fetch(`${this.tensorzeroUrl}/openai/v1/embeddings`, {
+        body: JSON.stringify({input: text, model: this.embeddingModel}),
+        headers: {'Content-Type': 'application/json'},
+        method: 'POST',
+        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      })
+      if (!resp.ok) {
+        process.stderr.write(`pmoves-embed: TensorZero returned ${resp.status}\n`)
+        return null
+      }
+
+      const data = await resp.json() as {data: Array<{embedding: number[]}>}
+      if (!data.data?.[0]?.embedding) {
+        return null
+      }
+
+      return {dim: data.data[0].embedding.length, vector: data.data[0].embedding}
+    } catch {
+      process.stderr.write(`pmoves-embed: TensorZero unreachable - trying Ollama fallback\n`)
+      return null
     }
   }
 }
@@ -282,5 +289,6 @@ export function getEmbeddingSidecar(): EmbeddingSidecar {
   if (!sidecarInstance) {
     sidecarInstance = new EmbeddingSidecar()
   }
+
   return sidecarInstance
 }
